@@ -516,6 +516,121 @@ createTimeRecord: async function(recordData) {
     getHolidayInfo: function(date) {
         const dateStr = date.toISOString().split('T')[0];
         return this.holidays[dateStr] || null;
+    },
+
+    // Fetch historical records for N months (for AI context)
+    fetchHistoricalRecords: async function(months) {
+        const config = TimeRecordingConfig.sap;
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - months);
+        
+        const startStr = TimeRecordingUtils.formatDate(startDate);
+        const endStr = TimeRecordingUtils.formatDate(endDate);
+        
+        TimeRecordingUtils.log('info', `Loading ${months} months of historical records (${startStr} to ${endStr})...`);
+        
+        try {
+            // Fetch in monthly batches to avoid overwhelming the server
+            const allRecords = [];
+            const current = new Date(startDate);
+            
+            while (current < endDate) {
+                const batchEnd = new Date(current);
+                batchEnd.setMonth(batchEnd.getMonth() + 1);
+                if (batchEnd > endDate) batchEnd.setTime(endDate.getTime());
+                
+                const batchStartStr = TimeRecordingUtils.formatDate(current);
+                const batchEndStr = TimeRecordingUtils.formatDate(batchEnd);
+                
+                const requests = [
+                    `TimeRecordS4Set?sap-client=${this.SAP_CLIENT}&$filter=Pernr%20eq%20%27${config.userPernr}%27%20and%20RecordDate%20ge%20%27${batchStartStr}%27%20and%20RecordDate%20le%20%27${batchEndStr}%27`
+                ];
+                
+                const response = await this.executeBatchRequest(requests);
+                
+                if (response && response[0]?.d?.results) {
+                    allRecords.push(...response[0].d.results);
+                }
+                
+                current.setMonth(current.getMonth() + 1);
+                
+                // Small delay between batches
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            
+            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months`);
+            return allRecords;
+            
+        } catch (error) {
+            TimeRecordingUtils.log('error', 'Failed to fetch historical records:', error);
+            return [];
+        }
+    },
+
+    // Summarize historical records for AI context (reduce token usage)
+    summarizeHistoricalRecords: function(records) {
+        if (!records || records.length === 0) return null;
+        
+        const projectHours = {};
+        const monthlyBreakdown = {};
+        const descriptions = {};
+        
+        records.forEach(record => {
+            const hours = parseFloat(record.Duration) || 0;
+            const projKey = `${record.AccProjId || 'unknown'}|${record.AccTaskPspId || ''}`;
+            const month = record.RecordDate ? record.RecordDate.substring(0, 6) : 'unknown';
+            const desc = record.Content || '';
+            
+            // Aggregate hours per project
+            if (!projectHours[projKey]) {
+                projectHours[projKey] = { 
+                    totalHours: 0, 
+                    count: 0, 
+                    projectId: record.AccProjId,
+                    taskId: record.AccTaskPspId,
+                    projectDesc: record.AccProjDesc || '',
+                    taskDesc: record.AccTaskPspDesc || '',
+                    accountInd: record.AccountInd || '10'
+                };
+            }
+            projectHours[projKey].totalHours += hours;
+            projectHours[projKey].count += 1;
+            
+            // Monthly breakdown
+            if (!monthlyBreakdown[month]) {
+                monthlyBreakdown[month] = { totalHours: 0, entries: 0 };
+            }
+            monthlyBreakdown[month].totalHours += hours;
+            monthlyBreakdown[month].entries += 1;
+            
+            // Collect unique description patterns per project
+            if (desc && desc.length > 3) {
+                if (!descriptions[projKey]) descriptions[projKey] = new Set();
+                if (descriptions[projKey].size < 5) {
+                    descriptions[projKey].add(desc.substring(0, 100));
+                }
+            }
+        });
+        
+        // Sort projects by total hours
+        const topProjects = Object.entries(projectHours)
+            .sort((a, b) => b[1].totalHours - a[1].totalHours)
+            .slice(0, 20)
+            .map(([key, data]) => ({
+                ...data,
+                avgHoursPerEntry: (data.totalHours / data.count).toFixed(2),
+                sampleDescriptions: descriptions[key] ? Array.from(descriptions[key]) : []
+            }));
+        
+        return {
+            totalRecords: records.length,
+            periodStart: records.reduce((min, r) => r.RecordDate < min ? r.RecordDate : min, records[0].RecordDate),
+            periodEnd: records.reduce((max, r) => r.RecordDate > max ? r.RecordDate : max, records[0].RecordDate),
+            topProjects: topProjects,
+            monthlyBreakdown: monthlyBreakdown,
+            totalHours: Object.values(projectHours).reduce((sum, p) => sum + p.totalHours, 0).toFixed(1)
+        };
     }
 };    }).toString() + ')();';
     document.head.appendChild(el);

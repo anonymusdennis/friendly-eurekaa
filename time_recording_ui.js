@@ -46,15 +46,23 @@ window.TimeRecordingUI = {
                     <!-- AI Chat Panel -->
                     <div id="trAIPanel" style="background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); width: 400px; max-height: 90vh; display: none; flex-direction: column;">
                         <div style="background: linear-gradient(135deg, #764ba2, #667eea); padding: 15px; color: white; border-radius: 12px 12px 0 0;">
-                            <h3 style="margin: 0; font-size: 16px;">🤖 AI Assistant</h3>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <h3 style="margin: 0; font-size: 16px;">🤖 AI Assistant</h3>
+                                <div style="display: flex; gap: 6px;">
+                                    <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
+                                    <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
+                                    <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
+                                </div>
+                            </div>
                         </div>
+                        <input type="file" id="trAIFileInput" style="display: none;" accept=".txt,.csv,.json,.md,.log,.xml">
                         <div id="trAIChatContainer" style="flex: 1; overflow-y: auto; padding: 15px; max-height: 500px;">
                             <div id="trAIChatMessages" style="display: flex; flex-direction: column; gap: 10px;">
                                 <!-- Chat messages will appear here -->
                             </div>
                         </div>
                         <div style="padding: 15px; border-top: 1px solid #dee2e6;">
-                            <textarea id="trAIInput" placeholder="Describe what you worked on..." style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px; resize: vertical;"></textarea>
+                            <textarea id="trAIInput" placeholder="Describe what you worked on... e.g. 'I worked on the tower application refactoring on Monday'" style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px; resize: vertical;"></textarea>
                             <div style="display: flex; gap: 10px; margin-top: 10px;">
                                 <button id="trAISend" style="flex: 1; padding: 10px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">Send</button>
                                 <button id="trAIClear" style="padding: 10px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear</button>
@@ -870,6 +878,67 @@ window.TimeRecordingUI = {
             document.getElementById('trAIClear').onclick = () => {
                 if (window.TimeRecordingAI) {
                     TimeRecordingAI.clearChat();
+                }
+            };
+        }
+
+        // Load History button
+        if (document.getElementById('trAILoadHistory')) {
+            document.getElementById('trAILoadHistory').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    const defaultMonths = TimeRecordingConfig.ai?.defaultHistoryMonths || 12;
+                    const months = prompt(`How many months of historical records should I load?\n(More months = better context but slower loading)`, defaultMonths);
+                    if (months && !isNaN(parseInt(months))) {
+                        TimeRecordingAI.loadHistoricalRecords(parseInt(months));
+                    }
+                }
+            };
+        }
+
+        // Upload File button
+        if (document.getElementById('trAIUploadFile')) {
+            document.getElementById('trAIUploadFile').onclick = () => {
+                document.getElementById('trAIFileInput')?.click();
+            };
+        }
+
+        // File input change handler
+        if (document.getElementById('trAIFileInput')) {
+            document.getElementById('trAIFileInput').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file && window.TimeRecordingAI) {
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        TimeRecordingAI.processFileUpload(evt.target.result, file.name);
+                    };
+                    reader.onerror = () => {
+                        TimeRecordingAI.addMessage('model', '❌ Failed to read file. Please try again.');
+                    };
+                    reader.readAsText(file);
+                }
+                // Reset so the same file can be uploaded again
+                e.target.value = '';
+            };
+        }
+
+        // Paste Clipboard button
+        if (document.getElementById('trAIPasteClipboard')) {
+            document.getElementById('trAIPasteClipboard').onclick = async () => {
+                if (window.TimeRecordingAI) {
+                    try {
+                        const clipboardText = await navigator.clipboard.readText();
+                        if (clipboardText && clipboardText.trim()) {
+                            TimeRecordingAI.processClipboardContent(clipboardText);
+                        } else {
+                            TimeRecordingAI.addMessage('model', '📋 Clipboard is empty. Copy some text first and try again.');
+                        }
+                    } catch (err) {
+                        // Fallback: prompt user to paste manually
+                        const manualPaste = prompt('Could not access clipboard directly. Please paste your clipboard content here:');
+                        if (manualPaste && manualPaste.trim()) {
+                            TimeRecordingAI.processClipboardContent(manualPaste);
+                        }
+                    }
                 }
             };
         }

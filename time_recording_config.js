@@ -29,6 +29,15 @@ window.TimeRecordingConfig = {
         year: new Date().getFullYear()
     },
     
+    // AI Configuration
+    ai: {
+        defaultHistoryMonths: 12,     // Default months of history to load
+        maxNonBillableHoursPerDay: 0.5, // Admin/non-billable max ~30 min/day
+        typicalBillableHoursPerDay: 7.5, // Typical development/billable hours
+        maxClipboardLength: 50000,    // Max clipboard text length to process
+        maxFileContextLength: 100000, // Max file context length
+    },
+
     // UI Configuration
     ui: {
         colors: {

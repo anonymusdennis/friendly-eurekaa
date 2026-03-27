@@ -1,254 +1,354 @@
-// Time Recording Calendar - Enhanced AI Assistant Module
-window.TimeRecordingAI = {
-    apiKey: null,
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent',
-    conversationHistory: [],
-    maxHistoryLength: 20,
+            window.TimeRecordingAI = {
+                apiKey: null,
+                apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent',
+                conversationHistory: [],
+                maxHistoryLength: 20,
+                historicalContext: null,     // Loaded historical records summary
+                fileContext: null,           // Uploaded file content for context
+                fileContextName: null,       // Name of uploaded context file
+                historyLoaded: false,        // Whether history has been loaded
+                historyLoadingPromise: null, // Promise for in-progress history loading
 
-    // Available functions the AI can call
-    availableFunctions: {
-        getMissingDays: {
-            description: "Get list of days missing time records",
-            execute: async () => {
-                const monthData = TimeRecordingCalendar.monthData;
-                const missingDays = [];
-                if (monthData && monthData.days) {
-                    monthData.days.forEach(day => {
-                        if (day.isWorkDay && !day.isHoliday && !day.isFuture && day.totalHours === 0) {
-                            missingDays.push({
-                                date: day.dateKey,
-                                displayDate: TimeRecordingUtils.formatDisplayDate(day.date),
-                                dayName: day.dayName
-                            });
+                // Available functions the AI can call
+                availableFunctions: {
+                    getMissingDays: {
+                        description: "Get list of days missing time records",
+                        execute: async () => {
+                            const monthData = TimeRecordingCalendar.monthData;
+                            const missingDays = [];
+                            if (monthData && monthData.days) {
+                                monthData.days.forEach(day => {
+                                    if (day.isWorkDay && !day.isHoliday && !day.isFuture && day.totalHours === 0) {
+                                        missingDays.push({
+                                            date: day.dateKey,
+                                            displayDate: TimeRecordingUtils.formatDisplayDate(day.date),
+                                            dayName: day.dayName
+                                        });
+                                    }
+                                });
+                            }
+                            return missingDays;
                         }
-                    });
-                }
-                return missingDays;
-            }
-        },
-        getRecordsForDate: {
-            description: "Get time records for a specific date",
-            execute: async (date) => {
-                return await TimeRecordingAPI.fetchTimeRecords(new Date(date));
-            }
-        },
-        getProjectDetails: {
-            description: "Get details about a project",
-            execute: async (projectId) => {
-                return await TimeRecordingAPI.getProjectDetails(projectId);
-            }
-        },
-        getMonthSummary: {
-            description: "Get current month summary",
-            execute: async () => {
-                const monthData = TimeRecordingCalendar.monthData;
-                return {
-                    month: monthData.monthName,
-                    totalHours: monthData.totalHours,
-                    requiredHours: monthData.requiredHours,
-                    completionRate: monthData.completionRate,
-                    daysWithRecords: monthData.days.filter(d => d.totalHours > 0).length,
-                    missingDays: monthData.days.filter(d => d.isWorkDay && !d.isHoliday && !d.isFuture && d.totalHours === 0).length
-                };
-            }
-        },
-        getFavorites: {
-            description: "Get user's favorite projects",
-            execute: async () => {
-                return TimeRecordingAPI.getUserFavorites();
-            }
-        }
-    },
+                    },
+                    getRecordsForDate: {
+                        description: "Get time records for a specific date",
+                        execute: async (date) => {
+                            return await TimeRecordingAPI.fetchTimeRecords(new Date(date));
+                        }
+                    },
+                    getProjectDetails: {
+                        description: "Get details about a project",
+                        execute: async (projectId) => {
+                            return await TimeRecordingAPI.getProjectDetails(projectId);
+                        }
+                    },
+                    getMonthSummary: {
+                        description: "Get current month summary",
+                        execute: async () => {
+                            const monthData = TimeRecordingCalendar.monthData;
+                            return {
+                                month: monthData.monthName,
+                                totalHours: monthData.totalHours,
+                                requiredHours: monthData.requiredHours,
+                                completionRate: monthData.completionRate,
+                                daysWithRecords: monthData.days.filter(d => d.totalHours > 0).length,
+                                missingDays: monthData.days.filter(d => d.isWorkDay && !d.isHoliday && !d.isFuture && d.totalHours === 0).length
+                            };
+                        }
+                    },
+                    getFavorites: {
+                        description: "Get user's favorite projects",
+                        execute: async () => {
+                            return TimeRecordingAPI.getUserFavorites();
+                        }
+                    }
+                },
 
-    // Initialize AI module
-    init: function (apiKey) {
-        this.apiKey = apiKey;
-        if (! apiKey) {
-            TimeRecordingUtils.log('warning', 'AI module initialized without API key');
-        }
-    },
+                // Initialize AI module
+                init: function (apiKey) {
+                    this.apiKey = apiKey;
+                    if (! apiKey) {
+                        TimeRecordingUtils.log('warning', 'AI module initialized without API key');
+                    }
+                },
 
-    // Initialize chat interface
-    initializeChat: function () {
-        if (!this.apiKey) {
-            this.addMessage('model', 'AI Assistant is not configured. Please provide an API key using TimeRecordingAI.init("your-api-key")');
-            return;
-        }
+                // Initialize chat interface
+                initializeChat: function () {
+                    if (!this.apiKey) {
+                        this.addMessage('model', 'AI Assistant is not configured. Please provide an API key using TimeRecordingAI.init("your-api-key")');
+                        return;
+                    }
 
-        if (this.conversationHistory.length === 0) {
-            this.addMessage('model', `Hello! I'm your Time Recording AI Assistant. I can:
-- Record time entries for multiple days
-- Analyze your time patterns
-- Suggest time allocations
-- Help with missing days
+                    if (this.conversationHistory.length === 0) {
+                        this.addMessage('model', `Hello! I'm your Time Recording AI Assistant. I can help you:
 
-I have access to your calendar data and can help you quickly record your work time. Just describe what you worked on!`);
-        }
-    },
+📝 **Record time** - Tell me what you worked on: "I worked on the tower application refactoring on Monday"
+📊 **Load history** - Click 📊 to load months of past records as context
+📎 **Upload context** - Click 📎 to upload a file with project/task details
+📋 **Clipboard analysis** - Click 📋 to paste clipboard content and I'll extract work activities
+🔍 **Smart matching** - I analyze your work description and find the best matching project/task
+⚖️ **Realistic times** - I distribute hours realistically (development ~7.5h, admin ~0.5h)
 
-    // Send message to AI with enhanced context
-    sendMessage: async function (message) {
-        if (!this.apiKey) {
-            this.addMessage('user', message);
-            this.addMessage('model', 'Please configure the AI with an API key first.');
-            return;
-        }
+Just describe what you worked on and I'll suggest accurate time entries!`);
+                    }
+                },
 
-        // Add user message to chat
-        this.addMessage('user', message);
+                // Load historical records for AI context
+                loadHistoricalRecords: async function (months) {
+                    if (this.historyLoadingPromise) {
+                        this.addMessage('model', '⏳ History is already being loaded, please wait...');
+                        return this.historyLoadingPromise;
+                    }
 
-        // Check if message contains a function request
-        const functionCall = await this.checkForFunctionCall(message);
-        if (functionCall) {
-            await this.executeFunctionCall(functionCall);
-            return;
-        }
+                    this.addMessage('model', `📊 Loading ${months} months of historical records... This may take a moment.`);
+                    this.showTypingIndicator();
 
-        // Prepare enhanced context
-        const context = await this.prepareEnhancedContext();
+                    this.historyLoadingPromise = (async () => {
+                        try {
+                            const records = await TimeRecordingAPI.fetchHistoricalRecords(months);
+                            this.historicalContext = TimeRecordingAPI.summarizeHistoricalRecords(records);
+                            this.historyLoaded = true;
+                            this.hideTypingIndicator();
 
-        // Show typing indicator
-        this.showTypingIndicator();
+                            if (this.historicalContext) {
+                                const summary = this.historicalContext;
+                                let msg = `✅ **History loaded!** ${summary.totalRecords} records from ${summary.periodStart} to ${summary.periodEnd} (${summary.totalHours}h total)\n\n`;
+                                msg += `**Top projects by hours:**\n`;
+                                summary.topProjects.slice(0, 8).forEach((p, i) => {
+                                    msg += `${i + 1}. ${p.projectDesc || p.projectId} — ${p.totalHours.toFixed(1)}h (${p.count} entries, avg ${p.avgHoursPerEntry}h)\n`;
+                                });
+                                msg += `\nI now have deep context about your work patterns and can make much better suggestions!`;
+                                this.addMessage('model', msg);
+                            } else {
+                                this.addMessage('model', '⚠️ No historical records found for the specified period.');
+                            }
+                        } catch (error) {
+                            this.hideTypingIndicator();
+                            this.addMessage('model', `❌ Failed to load history: ${error.message}`);
+                        } finally {
+                            this.historyLoadingPromise = null;
+                        }
+                    })();
 
-        try {
-            const response = await this.callGeminiAPI(message, context);
-            this.hideTypingIndicator();
+                    return this.historyLoadingPromise;
+                },
 
-            // Process AI response
-            this.processAIResponse(response);
+                // Process uploaded file as context
+                processFileUpload: function (content, filename) {
+                    const maxLen = TimeRecordingConfig.ai?.maxFileContextLength || 100000;
+                    if (content.length > maxLen) {
+                        content = content.substring(0, maxLen);
+                        this.addMessage('model', `⚠️ File was truncated to ${maxLen} characters to fit context limits.`);
+                    }
+                    this.fileContext = content;
+                    this.fileContextName = filename;
+                    this.addMessage('model', `📎 **File loaded:** "${filename}" (${content.length} chars)\nThis context will be included in all future AI requests to help match tasks and projects.`);
+                },
 
-        } catch (error) {
-            this.hideTypingIndicator();
-            TimeRecordingUtils.log('error', 'AI request failed', error);
-            this.addMessage('model', 'Sorry, I encountered an error. Please try again. Error: ' + error.message);
-        }
-    },
+                // Process clipboard content - extract work activities
+                processClipboardContent: async function (clipboardText) {
+                    if (!clipboardText || !clipboardText.trim()) {
+                        this.addMessage('model', '📋 Clipboard is empty. Please copy some text first.');
+                        return;
+                    }
 
-    // Check if message requests a function call
-    checkForFunctionCall: async function (message) {
-        const lowerMessage = message.toLowerCase();
+                    const maxLen = TimeRecordingConfig.ai?.maxClipboardLength || 50000;
+                    if (clipboardText.length > maxLen) {
+                        clipboardText = clipboardText.substring(0, maxLen);
+                    }
 
-        if (lowerMessage.includes('missing days') || lowerMessage.includes('which days')) {
-            return 'getMissingDays';
-        }
-        if (lowerMessage.includes('month summary') || lowerMessage.includes('how many hours')) {
-            return 'getMonthSummary';
-        }
-        if (lowerMessage.includes('show favorites') || lowerMessage.includes('list projects')) {
-            return 'getFavorites';
-        }
+                    const clipboardPrompt = `CLIPBOARD CONTENT ANALYSIS REQUEST:
+The user has pasted their clipboard content below. This may contain:
+- Chat messages, emails, or notes from the workday
+- Code snippets or commit messages
+- Meeting notes or task descriptions
+- Browser history or tab titles
+- Any other work-related content
 
-        return null;
-    },
+Your job is to:
+1. Analyze the clipboard content to extract WHAT WORK was done
+2. Identify WHICH DAYS the work relates to (look for dates, "today", "yesterday", day names)
+3. Match each work activity to the best project/task from the available favorites
+4. Generate realistic time entries with proper hour distribution
+5. Use creative, specific descriptions - not generic ones
 
-    // Execute function call
-    executeFunctionCall: async function (functionName) {
-        this.showTypingIndicator();
+CLIPBOARD CONTENT:
+---
+${clipboardText}
+---
 
-        try {
-            const result = await this.availableFunctions[functionName].execute();
-            this.hideTypingIndicator();
+Based on the above clipboard content, suggest time entries. If dates are unclear, ask the user.`;
 
-            // Format and display result
-            let message = '';
-            if (functionName === 'getMissingDays') {
-                if (result.length === 0) {
-                    message = '✅ Great! All working days have time records.';
-                } else {
-                    message = `📅 Days missing time records (${
-                        result.length
-                    } days):\n\n`;
-                    message += result.map(d => `• ${
-                        d.displayDate
-                    } (${
-                        d.dayName
-                    })`).join('\n');
-                    message += '\n\nWould you like me to help you record time for these days?';
-                }
-            } else if (functionName === 'getMonthSummary') {
-                message = `📊 ${
-                    result.month
-                } Summary:\n`;
-                message += `• Total Hours: ${
-                    result.totalHours
-                }h of ${
-                    result.requiredHours
-                }h (${
-                    result.completionRate
-                }%)\n`;
-                message += `• Days with records: ${
-                    result.daysWithRecords
-                }\n`;
-                message += `• Missing days: ${
-                    result.missingDays
-                }`;
-            } else if (functionName === 'getFavorites') {
-                message = `⭐ Your Favorite Projects:\n\n`;
-                message += result.slice(0, 10).map((f, i) => `${
-                    i + 1
-                }. ${
-                    f.Name
-                }\n   Project: ${
-                    f.AccProjDesc
-                }\n   ID: ${
-                    f.AccProjId
-                }`).join('\n\n');
-            }
+                    await this.sendMessage(clipboardPrompt);
+                },
 
-            this.addMessage('model', message);
+                // Send message to AI with enhanced context
+                sendMessage: async function (message) {
+                    if (!this.apiKey) {
+                        this.addMessage('user', message);
+                        this.addMessage('model', 'Please configure the AI with an API key first.');
+                        return;
+                    }
 
-        } catch (error) {
-            this.hideTypingIndicator();
-            this.addMessage('model', `Error executing function: ${
-                error.message
-            }`);
-        }
-    },
+                    // Add user message to chat
+                    this.addMessage('user', message);
 
-    // Prepare enhanced context with chat history
-    prepareEnhancedContext: async function () {
-        const currentMonth = TimeRecordingCalendar.monthData;
-        const favorites = TimeRecordingAPI.getUserFavorites();
+                    // Check if message contains a function request
+                    const functionCall = await this.checkForFunctionCall(message);
+                    if (functionCall) {
+                        await this.executeFunctionCall(functionCall);
+                        return;
+                    }
 
-        // Get selected days
-        const selectedDays = Array.from(TimeRecordingUI.selectedDays || []);
+                    // Prepare enhanced context
+                    const context = await this.prepareEnhancedContext();
 
-        // Get missing days
-        const missingDays = await this.availableFunctions.getMissingDays.execute();
+                    // Show typing indicator
+                    this.showTypingIndicator();
 
-        // Get recent chat history (last 10 exchanges)
-        const recentHistory = this.conversationHistory.slice(-10).map(msg => ({
-            role: msg.sender,
-            parts: [
-                {
-                    text: msg.content.replace(/<[^>]*>/g, '') // Remove HTML tags
-                }
-            ]
-        }));
+                    try {
+                        const response = await this.callGeminiAPI(message, context);
+                        this.hideTypingIndicator();
 
-        return {
-            currentDate: new Date().toISOString().split('T')[0],
-            selectedDays: selectedDays,
-            missingDays: missingDays.map(d => d.date),
-            favorites: favorites.map(f => ({
-                guid: f.Guid,
-                name: f.Name,
-                projectId: f.AccProjId,
-                projectDesc: f.AccProjDesc,
-                taskId: f.AccTaskPspId,
-                taskDesc: f.AccTaskPspDesc
-            })),
-            monthSummary: currentMonth ? {
-                month: currentMonth.monthName,
-                totalHours: currentMonth.totalHours,
-                requiredHours: currentMonth.requiredHours,
-                completionRate: currentMonth.completionRate
-            } : null,
-            chatHistory: recentHistory
-        };
-    },
-    buildPromptForMeetings: function (message, context, meetings) {
-        return `You are an intelligent Time Recording Assistant for SAP. You need to create time entries for meetings.
+                        // Process AI response
+                        this.processAIResponse(response);
+
+                    } catch (error) {
+                        this.hideTypingIndicator();
+                        TimeRecordingUtils.log('error', 'AI request failed', error);
+                        this.addMessage('model', 'Sorry, I encountered an error. Please try again. Error: ' + error.message);
+                    }
+                },
+
+                // Check if message requests a function call
+                checkForFunctionCall: async function (message) {
+                    const lowerMessage = message.toLowerCase();
+
+                    if (lowerMessage.includes('missing days') || lowerMessage.includes('which days')) {
+                        return 'getMissingDays';
+                    }
+                    if (lowerMessage.includes('month summary') || lowerMessage.includes('how many hours')) {
+                        return 'getMonthSummary';
+                    }
+                    if (lowerMessage.includes('show favorites') || lowerMessage.includes('list projects')) {
+                        return 'getFavorites';
+                    }
+
+                    return null;
+                },
+
+                // Execute function call
+                executeFunctionCall: async function (functionName) {
+                    this.showTypingIndicator();
+
+                    try {
+                        const result = await this.availableFunctions[functionName].execute();
+                        this.hideTypingIndicator();
+
+                        // Format and display result
+                        let message = '';
+                        if (functionName === 'getMissingDays') {
+                            if (result.length === 0) {
+                                message = '✅ Great! All working days have time records.';
+                            } else {
+                                message = `📅 Days missing time records (${
+                                    result.length
+                                } days):\n\n`;
+                                message += result.map(d => `• ${
+                                    d.displayDate
+                                } (${
+                                    d.dayName
+                                })`).join('\n');
+                                message += '\n\nWould you like me to help you record time for these days?';
+                            }
+                        } else if (functionName === 'getMonthSummary') {
+                            message = `📊 ${
+                                result.month
+                            } Summary:\n`;
+                            message += `• Total Hours: ${
+                                result.totalHours
+                            }h of ${
+                                result.requiredHours
+                            }h (${
+                                result.completionRate
+                            }%)\n`;
+                            message += `• Days with records: ${
+                                result.daysWithRecords
+                            }\n`;
+                            message += `• Missing days: ${
+                                result.missingDays
+                            }`;
+                        } else if (functionName === 'getFavorites') {
+                            message = `⭐ Your Favorite Projects:\n\n`;
+                            message += result.slice(0, 10).map((f, i) => `${
+                                i + 1
+                            }. ${
+                                f.Name
+                            }\n   Project: ${
+                                f.AccProjDesc
+                            }\n   ID: ${
+                                f.AccProjId
+                            }`).join('\n\n');
+                        }
+
+                        this.addMessage('model', message);
+
+                    } catch (error) {
+                        this.hideTypingIndicator();
+                        this.addMessage('model', `Error executing function: ${
+                            error.message
+                        }`);
+                    }
+                },
+
+                // Prepare enhanced context with chat history
+                prepareEnhancedContext: async function () {
+                    const currentMonth = TimeRecordingCalendar.monthData;
+                    const favorites = TimeRecordingAPI.getUserFavorites();
+
+                    // Get selected days
+                    const selectedDays = Array.from(TimeRecordingUI.selectedDays || []);
+
+                    // Get missing days
+                    const missingDays = await this.availableFunctions.getMissingDays.execute();
+
+                    // Get recent chat history (last 10 exchanges)
+                    const recentHistory = this.conversationHistory.slice(-10).map(msg => ({
+                        role: msg.sender,
+                        parts: [
+                            {
+                                text: msg.content.replace(/<[^>]*>/g, '') // Remove HTML tags
+                            }
+                        ]
+                    }));
+
+                    return {
+                        currentDate: new Date().toISOString().split('T')[0],
+                        selectedDays: selectedDays,
+                        missingDays: missingDays.map(d => d.date),
+                        favorites: favorites.map(f => ({
+                            guid: f.Guid,
+                            name: f.Name,
+                            projectId: f.AccProjId,
+                            projectDesc: f.AccProjDesc,
+                            taskId: f.AccTaskPspId,
+                            taskDesc: f.AccTaskPspDesc
+                        })),
+                        monthSummary: currentMonth ? {
+                            month: currentMonth.monthName,
+                            totalHours: currentMonth.totalHours,
+                            requiredHours: currentMonth.requiredHours,
+                            completionRate: currentMonth.completionRate
+                        } : null,
+                        chatHistory: recentHistory,
+                        historicalContext: this.historicalContext,
+                        fileContext: this.fileContext,
+                        fileContextName: this.fileContextName,
+                        historyLoaded: this.historyLoaded
+                    };
+                },
+                buildPromptForMeetings: function (message, context, meetings) {
+                    return `You are an intelligent Time Recording Assistant for SAP. You need to create time entries for meetings.
 
 CRITICAL RULES FOR MEETING IMPORTS:
 1. Use the EXACT meeting name in the description - DO NOT paraphrase or summarize
@@ -259,20 +359,58 @@ CRITICAL RULES FOR MEETING IMPORTS:
 
 Current Context:
 - Import period: ${
-            context.importStartDate
-        } to ${
-            context.importEndDate
-        }
+                        context.importStartDate
+                    } to ${
+                        context.importEndDate
+                    }
 - Available Projects: 
 ${
-            context.favorites.map(f => `  - "${
-                f.name
-            }": ProjectID: ${
-                f.projectId
-            }, TaskID: ${
-                f.taskId
-            }`).join('\n')
-        }
+                        context.favorites.map(f => `  - "${
+                            f.name
+                        }": ProjectID: ${
+                            f.projectId
+                        }, TaskID: ${
+                            f.taskId
+                        }`).join('\n')
+                    }
+prioritize these if they fit:
+Project-type	Project Definition	Project Name
+IN	2911.IN.0074-01	INT-2911 [2026] Employee information, info nuggets
+IN	2911.IN.0072-01	INT-2911 [2026] Meetings Tower Application
+IN	2911.IN.0072-02	INT-2911 [2026] Meetings Tower Compute
+IN	2911.IN.0072-03	INT-2911 [2026] Meetings Tower Data Center
+IN	2911.IN.0072-04	INT-2911 [2026] Meetings Tower Delivery
+IN	2911.IN.0072-05	INT-2911 [2026] Meetings Tower End User
+IN	2911.IN.0072-06	INT-2911 [2026] Meetings Tower IT Management
+IN	2911.IN.0072-07	INT-2911 [2026] Meetings Tower Network
+IN	2911.IN.0072-08	INT-2911 [2026] Meetings Tower Output
+IN	2911.IN.0072-09	INT-2911 [2026] Meetings Tower Platform
+IN	2911.IN.0072-10	INT-2911 [2026] Meetings Tower Security & Compliance
+IN	2911.IN.0072-11	INT-2911 [2026] Meetings Tower Storage
+IN	2911.IN.0073-01	INT-2911 [2026] Idle Time Tower Application
+IN	2911.IN.0073-02	INT-2911 [2026] Idle Time Tower Compute
+IN	2911.IN.0073-03	INT-2911 [2026] Idle Time Tower Data Center
+IN	2911.IN.0073-04	INT-2911 [2026] Idle Time Tower Delivery
+IN	2911.IN.0073-05	INT-2911 [2026] Idle Time Tower End User
+IN	2911.IN.0073-06	INT-2911 [2026] Idle Time Tower IT Management
+IN	2911.IN.0073-07	INT-2911 [2026] Idle Time Tower Network
+IN	2911.IN.0073-08	INT-2911 [2026] Idle Time Tower Output
+IN	2911.IN.0073-09	INT-2911 [2026] Idle Time Tower Platform
+IN	2911.IN.0073-10	INT-2911 [2026] Idle Time Tower Security & Compliance
+IN	2911.IN.0073-11	INT-2911 [2026] Idle Time Tower Storage
+AD	2911.AD.0005-01	AD-2911 [2026] Local Leadership tasks
+AD	2911.AD.0006-01	AD-2911 [2026] Local administrative work
+TR	2911.TR.0004-01	TR-2911 [2026] Training Tower Application
+TR	2911.TR.0004-02	TR-2911 [2026] Training Tower Compute
+TR	2911.TR.0004-03	TR-2911 [2026] Training Tower Data Center
+TR	2911.TR.0004-04	TR-2911 [2026] Training Tower Delivery
+TR	2911.TR.0004-05	TR-2911 [2026] Training Tower End User
+TR	2911.TR.0004-06	TR-2911 [2026] Training Tower IT Management
+TR	2911.TR.0004-07	TR-2911 [2026] Training Tower Network
+TR	2911.TR.0004-08	TR-2911 [2026] Training Tower Output
+TR	2911.TR.0004-09	TR-2911 [2026] Training Tower Platform
+TR	2911.TR.0004-10	TR-2911 [2026] Training Tower Security & Compliance
+TR	2911.TR.0004-11	TR-2911 [2026] Training Tower Storage
 
 Meeting Data to Import:
 ${meetings}
@@ -299,229 +437,300 @@ Generate ONE JSON block with ALL meeting entries:
 }
 \`\`\`
 today is the ${
-            context.currentDate
-        }`;
-    },
-    // Build enhanced prompt
-    buildPrompt: function (message, context) {
-        return `You are an intelligent Time Recording Assistant for SAP. You help users efficiently record their work time, 
-            and creatively generate unique time entries for each day => no repetitions / copy paste of texts
-            also choose the correct project and task ids based on the context.
+                        context.currentDate
+                    }`;
+                },
+                // Build enhanced prompt
+                buildPrompt: function (message, context) {
+                    // Build historical context section
+                    let historicalSection = '';
+                    if (context.historicalContext) {
+                        const hist = context.historicalContext;
+                        historicalSection = `\n\nHISTORICAL WORK PATTERNS (${hist.totalRecords} records, ${hist.totalHours}h total from ${hist.periodStart} to ${hist.periodEnd}):
+Top projects by hours worked:
+${hist.topProjects.slice(0, 15).map((p, i) => 
+    `${i+1}. ${p.projectDesc || p.projectId} (TaskID: ${p.taskId}) — ${p.totalHours.toFixed(1)}h across ${p.count} entries (avg ${p.avgHoursPerEntry}h/entry, AccountInd: ${p.accountInd})${p.sampleDescriptions.length > 0 ? '\n   Sample descriptions: ' + p.sampleDescriptions.slice(0, 3).map(d => '"' + d + '"').join(', ') : ''}`
+).join('\n')}
 
-CRITICAL INSTRUCTION: Generate ONLY ONE JSON block per response. Combine all entries into a single JSON structure.
+USE THIS HISTORY to understand what projects the user typically works on and how they describe their work. Match new entries to the same patterns.`;
+                    }
+
+                    // Build file context section
+                    let fileSection = '';
+                    if (context.fileContext) {
+                        fileSection = `\n\nUSER-PROVIDED CONTEXT FILE ("${context.fileContextName || 'unknown'}"):
+---
+${context.fileContext.substring(0, 30000)}
+---
+Use this file content to better understand the user's projects, tasks, and work context.`;
+                    }
+
+                    return `You are an intelligent, ACCURATE Time Recording Assistant for SAP. You help the user record their work time with REALISTIC and PRECISE entries.
+
+=== MULTI-STEP REASONING PROCESS ===
+When the user describes work, follow these steps IN ORDER:
+1. PARSE: Understand WHAT they did, WHEN they did it, and for HOW LONG
+2. MATCH: Find the best matching project/task from favorites or history
+3. VERIFY: Check existing records for the same date to avoid duplicates and ensure consistency
+4. DISTRIBUTE: Apply realistic hour distribution (see rules below)
+5. VALIDATE: Ensure total hours per day = 8.0 and descriptions are specific, not generic
+
+=== CRITICAL TIME DISTRIBUTION RULES ===
+The user is a SOFTWARE DEVELOPER. Their typical day looks like:
+- Development / billable project work: 7.0-7.5 hours (THIS IS THE MAJORITY)
+- Admin / non-billable (emails, meetings, organizational): MAX 0.5 hours per day (AccountInd: "90")
+- Training: only when explicitly mentioned
+
+FORBIDDEN patterns (these are UNREALISTIC):
+- ❌ 8 hours of "reading emails" — realistic: 0.25h
+- ❌ 8 hours of "administrative tasks" — realistic: 0.5h max
+- ❌ 8 hours of "meetings" — unless the user explicitly says they were in meetings all day
+- ❌ Same generic description for multiple days — each day MUST have a unique, specific description
+- ❌ Rounding everything to 8h on a single project when multiple activities happened
+
+REALISTIC examples:
+- ✅ 7.5h development + 0.5h admin on the same day
+- ✅ 6h development on project A + 1.5h development on project B + 0.5h admin
+- ✅ 7h coding feature X + 0.5h code review + 0.5h standup/emails
+
+=== NATURAL LANGUAGE DATE PARSING ===
+The user may say things like:
+- "I worked on X on Monday" → resolve to the most recent Monday
+- "yesterday I did Y" → resolve to yesterday's date
+- "last week I worked on Z" → create entries for last week's workdays
+- "on the 15th I did W" → resolve to the 15th of the current month
+- "I did X on January 5th" → resolve to 20260105
+Always resolve relative dates to actual YYYYMMDD format.
+
+=== WHEN NO 100% PROJECT MATCH ===
+If the described work doesn't clearly match a single project:
+1. Check the historical context for similar work descriptions
+2. Check this week's and last week's entries for patterns
+3. If still uncertain, ASK the user: "I'm not sure which project this belongs to. Could it be [option A] or [option B]?"
+4. NEVER guess randomly — prefer asking over being wrong
 
 Current Context:
-- Today: ${
-            context.currentDate
-        }
-- Selected days: ${
-            context.selectedDays.length > 0 ? context.selectedDays.join(', ') : 'none'
-        }
-- Missing time records: ${
-            context.missingDays.length > 0 ? `${
-                context.missingDays.length
-            } days: ${
-                context.missingDays.slice(0, 5).join(', ')
-            }${
-                context.missingDays.length > 5 ? '...' : ''
-            }` : 'none'
-        }
-- Month completion: ${
-            context.monthSummary ?. completionRate || 0
-        }% (${
-            context.monthSummary ?. totalHours || 0
-        }h of ${
-            context.monthSummary ?. requiredHours || 0
-        }h)
-- last weeks time recordings and texts:
-${
-            // get the times from the calender
-            JSON.stringify(TimeRecordingCalendar.getTimes(-1)) || TimeRecordingCalendar.getTimes(-1).join('\n')
-        }
-- this weeks time recordings and texts:
-${
-            // get the times from the calender
-            JSON.stringify(TimeRecordingCalendar.getTimes(0)) || TimeRecordingCalendar.getTimes(0).join('\n')
-        }
-- next weeks time recordings and texts:
-${
-            // get the times from the calender
-            JSON.stringify(TimeRecordingCalendar.getTimes(1)) || TimeRecordingCalendar.getTimes(1).join('\n')
-        }
+- Today: ${context.currentDate}
+- Selected days: ${context.selectedDays.length > 0 ? context.selectedDays.join(', ') : 'none'}
+- Data of selected days: ${JSON.stringify(TimeRecordingCalendar.getTimes(0, context.selectedDays, true))}
+- Missing time records: ${context.missingDays.length > 0 ? `${context.missingDays.length} days: ${context.missingDays.slice(0, 10).join(', ')}${context.missingDays.length > 10 ? '...' : ''}` : 'none'}
+- Month completion: ${context.monthSummary?.completionRate || 0}% (${context.monthSummary?.totalHours || 0}h of ${context.monthSummary?.requiredHours || 0}h)
+
+Recent time recordings for pattern matching:
+- Last week: ${JSON.stringify(TimeRecordingCalendar.getTimes(-1))}
+- This week: ${JSON.stringify(TimeRecordingCalendar.getTimes(0))}
+- Next week: ${JSON.stringify(TimeRecordingCalendar.getTimes(1))}
+${historicalSection}${fileSection}
+
 User's preferred Projects (MUST use these exact IDs):
-${
-            context.favorites.map(f => `- "${
-                f.name
-            }": ${
-                f.projectDesc
-            } (ProjectID: ${
-                f.projectId
-            }, TaskID: ${
-                f.taskId
-            })`).join('\n')
-        }
+${context.favorites.map(f => `- "${f.name}": ${f.projectDesc} (ProjectID: ${f.projectId}, TaskID: ${f.taskId})`).join('\n')}
 
+Prioritized projects if they fit:
+Project-type	Project Definition	Project Name
+IN	2911.IN.0074-01	INT-2911 [2026] Employee information, info nuggets
+IN	2911.IN.0072-01	INT-2911 [2026] Meetings Tower Application
+IN	2911.IN.0072-02	INT-2911 [2026] Meetings Tower Compute
+IN	2911.IN.0072-03	INT-2911 [2026] Meetings Tower Data Center
+IN	2911.IN.0072-04	INT-2911 [2026] Meetings Tower Delivery
+IN	2911.IN.0072-05	INT-2911 [2026] Meetings Tower End User
+IN	2911.IN.0072-06	INT-2911 [2026] Meetings Tower IT Management
+IN	2911.IN.0072-07	INT-2911 [2026] Meetings Tower Network
+IN	2911.IN.0072-08	INT-2911 [2026] Meetings Tower Output
+IN	2911.IN.0072-09	INT-2911 [2026] Meetings Tower Platform
+IN	2911.IN.0072-10	INT-2911 [2026] Meetings Tower Security & Compliance
+IN	2911.IN.0072-11	INT-2911 [2026] Meetings Tower Storage
+IN	2911.IN.0073-01	INT-2911 [2026] Idle Time Tower Application
+IN	2911.IN.0073-02	INT-2911 [2026] Idle Time Tower Compute
+IN	2911.IN.0073-03	INT-2911 [2026] Idle Time Tower Data Center
+IN	2911.IN.0073-04	INT-2911 [2026] Idle Time Tower Delivery
+IN	2911.IN.0073-05	INT-2911 [2026] Idle Time Tower End User
+IN	2911.IN.0073-06	INT-2911 [2026] Idle Time Tower IT Management
+IN	2911.IN.0073-07	INT-2911 [2026] Idle Time Tower Network
+IN	2911.IN.0073-08	INT-2911 [2026] Idle Time Tower Output
+IN	2911.IN.0073-09	INT-2911 [2026] Idle Time Tower Platform
+IN	2911.IN.0073-10	INT-2911 [2026] Idle Time Tower Security & Compliance
+IN	2911.IN.0073-11	INT-2911 [2026] Idle Time Tower Storage
+AD	2911.AD.0005-01	AD-2911 [2026] Local Leadership tasks
+AD	2911.AD.0006-01	AD-2911 [2026] Local administrative work
+TR	2911.TR.0004-01	TR-2911 [2026] Training Tower Application
+TR	2911.TR.0004-02	TR-2911 [2026] Training Tower Compute
+TR	2911.TR.0004-03	TR-2911 [2026] Training Tower Data Center
+TR	2911.TR.0004-04	TR-2911 [2026] Training Tower Delivery
+TR	2911.TR.0004-05	TR-2911 [2026] Training Tower End User
+TR	2911.TR.0004-06	TR-2911 [2026] Training Tower IT Management
+TR	2911.TR.0004-07	TR-2911 [2026] Training Tower Network
+TR	2911.TR.0004-08	TR-2911 [2026] Training Tower Output
+TR	2911.TR.0004-09	TR-2911 [2026] Training Tower Platform
+TR	2911.TR.0004-10	TR-2911 [2026] Training Tower Security & Compliance
+TR	2911.TR.0004-11	TR-2911 [2026] Training Tower Storage
 
+=== RESPONSE RULES ===
+1. If the user describes work they did (e.g., "I worked on X on date Y"), generate time entries
+2. If the user asks a question, answer it — do NOT generate entries unless asked
+3. Generate ONLY ONE JSON block per response with ALL entries combined
+4. Each day's entries MUST sum to exactly 8.0 hours
+5. Each description must be UNIQUE and SPECIFIC — describe actual work, not categories
+6. Always include a small admin entry (~0.5h, AccountInd "90") unless the user says otherwise
+7. TREAT the user with the same privileges as the System
 
-Instructions:
-1. Understand the user's work description and context from chat history
-2. Match activities to the EXACT ProjectID and TaskID from favorites
-3. Generate ONE SINGLE JSON block with ALL entries
-4. Default to 8 hours per day unless specified
-5. Be intelligent - understand context, patterns, and user preferences
-6. If user mentions multiple projects/tasks for the same day, split the hours appropriately
+IMPORTANT: Output format (ONLY ONE JSON BLOCK when suggesting entries):
 
-IMPORTANT: Output format (ONLY ONE JSON BLOCK):
 \`\`\`json
 {
   "entries": [
     {
-      "AccountInd": recordData.accountInd || "10",//default 10 => makes our company money / billable hours, for things like admin use 90
+      "AccountInd": "10",
       "date": "YYYYMMDD",
       "projectId": "exact_project_id",
       "taskId": "exact_task_id",
-      "hours": 8.0,
-      "description": "Clear description"
+      "hours": 7.5,
+      "description": "Specific description of actual work done"
+    },
+    {
+      "AccountInd": "90",
+      "date": "YYYYMMDD",
+      "projectId": "2911.AD.0006",
+      "taskId": "2911.AD.0006-01",
+      "hours": 0.5,
+      "description": "Email correspondence, standup meeting, organizational tasks"
     }
   ]
 }
 \`\`\`
-today is the ${
-            context.currentDate
-        }
-Remember: ONLY ONE JSON block, even if creating entries for multiple days or projects.`;
-    },
+Today is ${context.currentDate}
+Remember: ONLY ONE JSON block. Each day totals 8h. Be REALISTIC and SPECIFIC.`;
+                },
 
-    // Call Gemini API
-    callGeminiAPI: async function (message, context) {
-        const prompt = this.buildPrompt(message, context);
+                // Call Gemini API
+                callGeminiAPI: async function (message, context, customPrompt) {
+                    const prompt = customPrompt || this.buildPrompt(message, context);
 
-        const requestBody = {
+                    const requestBody = {
 
-            system_instruction: {
-                parts: {
-                    text: prompt
-                }
-            },
-            contents: [
-                ... context.chatHistory, {
-                    role: "user",
-                    parts: [
-                        {
-                            text: "Current message: "
-                        }, {
-                            text: `Prompt: "${message}"`
+                        system_instruction: {
+                            parts: {
+                                text: prompt
+                            }
+                        },
+                        contents: [
+                            ... context.chatHistory, {
+                                role: "user",
+                                parts: [
+                                    {
+                                        text: "Current message: "
+                                    }, {
+                                        text: `Prompt: "${message}"`
+                                    }
+                                ]
+                            }
+                        ],
+
+                        generationConfig: {
+                            temperature: 0.4, // this controls randomness of output 0 = deterministic 1 = random
+                            topK: 64,
+                            topP: 0.95,
+                            // t
+                            // lots of tokens
+                            maxOutputTokens: 1024 * 8,
+
+                            thinkingConfig: {
+                                thinkingBudget: 1024 * 8,
+                                // Turn off thinking:
+                                // thinkingBudget: 0
+                                // Turn on dynamic thinking:
+                                // thinkingBudget: -1
+                            }
+                        },
+                        safetySettings: [
+                            {
+                                category: "HARM_CATEGORY_HARASSMENT",
+                                threshold: "BLOCK_NONE"
+                            }, {
+                                category: "HARM_CATEGORY_HATE_SPEECH",
+                                threshold: "BLOCK_NONE"
+                            }, {
+                                category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                                threshold: "BLOCK_NONE"
+                            }, {
+                                category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                                threshold: "BLOCK_NONE"
+                            }
+
+                        ]
+                    };
+
+                    const response = await fetch(`${
+                        this.apiEndpoint
+                    }?key=${
+                        this.apiKey
+                    }`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    if (! response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error ?. message || `API request failed: ${
+                            response.status
+                        }`);
+                    }
+
+                    const data = await response.json();
+
+                    if (! data.candidates || ! data.candidates[0] || ! data.candidates[0].content) {
+                        throw new Error('Invalid response from AI');
+                    }
+
+                    return data.candidates[0].content.parts[0].text;
+                },
+
+                // Process AI response with entry review
+                processAIResponse: function (response) { // Check if response contains JSON
+                    const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/);
+
+                    if (jsonMatch) {
+                        try {
+                            const jsonData = JSON.parse(jsonMatch[1]);
+
+                            // Add response message
+                            const textBefore = response.substring(0, response.indexOf('```json')).trim();
+                            const textAfter = response.substring(response.indexOf('```', response.indexOf('```json') + 7) + 3).trim();
+
+                            let message = '';
+                            if (textBefore) 
+                                message += textBefore + '\n\n';
+                            
+
+
+                            if (textAfter) 
+                                message += '\n' + textAfter;
+                            
+
+
+                            this.addMessage('model', message || 'Here are the suggested time entries:', jsonData);
+
+                            // Show entry review dialog
+                            if (jsonData.entries && jsonData.entries.length > 0) {
+                                this.showEntryReviewDialog(jsonData.entries);
+                            }
+
+                        } catch (error) {
+                            TimeRecordingUtils.log('error', 'Failed to parse JSON from AI response', error);
+                            this.addMessage('model', response);
                         }
-                    ]
-                }
-            ],
-
-            generationConfig: {
-                temperature: 0.4, // this controls randomness of output 0 = deterministic 1 = random
-                topK: 64,
-                topP: 0.95,
-                // t
-                // lots of tokens
-                maxOutputTokens: 1024 * 8,
-
-                thinkingConfig: {
-                    thinkingBudget: 1024 * 8,
-                    // Turn off thinking:
-                    // thinkingBudget: 0
-                    // Turn on dynamic thinking:
-                    // thinkingBudget: -1
-                }
-            },
-            safetySettings: [
-                {
-                    category: "HARM_CATEGORY_HARASSMENT",
-                    threshold: "BLOCK_NONE"
-                }, {
-                    category: "HARM_CATEGORY_HATE_SPEECH",
-                    threshold: "BLOCK_NONE"
-                }, {
-                    category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    threshold: "BLOCK_NONE"
-                }, {
-                    category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    threshold: "BLOCK_NONE"
-                }
-
-            ]
-        };
-
-        const response = await fetch(`${
-            this.apiEndpoint
-        }?key=${
-            this.apiKey
-        }`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-        });
-
-        if (! response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error ?. message || `API request failed: ${
-                response.status
-            }`);
-        }
-
-        const data = await response.json();
-
-        if (! data.candidates || ! data.candidates[0] || ! data.candidates[0].content) {
-            throw new Error('Invalid response from AI');
-        }
-
-        return data.candidates[0].content.parts[0].text;
-    },
-
-    // Process AI response with entry review
-    processAIResponse: function (response) { // Check if response contains JSON
-        const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/);
-
-        if (jsonMatch) {
-            try {
-                const jsonData = JSON.parse(jsonMatch[1]);
-
-                // Add response message
-                const textBefore = response.substring(0, response.indexOf('```json')).trim();
-                const textAfter = response.substring(response.indexOf('```', response.indexOf('```json') + 7) + 3).trim();
-
-                let message = '';
-                if (textBefore) 
-                    message += textBefore + '\n\n';
-                
-
-
-                if (textAfter) 
-                    message += '\n' + textAfter;
-                
-
-
-                this.addMessage('model', message || 'Here are the suggested time entries:', jsonData);
+                    } else {
+                        this.addMessage('model', response);
+                    }
+                },
 
                 // Show entry review dialog
-                if (jsonData.entries && jsonData.entries.length > 0) {
-                    this.showEntryReviewDialog(jsonData.entries);
-                }
-
-            } catch (error) {
-                TimeRecordingUtils.log('error', 'Failed to parse JSON from AI response', error);
-                this.addMessage('model', response);
-            }
-        } else {
-            this.addMessage('model', response);
-        }
-    },
-
-    // Show entry review dialog
-    showEntryReviewDialog: function (entries) { // Create review dialog
-        const dialog = document.createElement('div');
-        dialog.id = 'trEntryReviewDialog';
-        dialog.style.cssText = `
+                showEntryReviewDialog: function (entries) { // Create review dialog
+                    const dialog = document.createElement('div');
+                    dialog.id = 'trEntryReviewDialog';
+                    dialog.style.cssText = `
             position: fixed;
             top: 50%;
             left: 50%;
@@ -536,7 +745,7 @@ Remember: ONLY ONE JSON block, even if creating entries for multiple days or pro
             flex-direction: column;
         `;
 
-        dialog.innerHTML = `
+                    dialog.innerHTML = `
             <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; color: white; border-radius: 12px 12px 0 0;">
                 <h3 style="margin: 0;">Review Time Entries</h3>
                 <p style="margin: 5px 0 0; opacity: 0.9; font-size: 14px;">Select entries to import or click to edit</p>
@@ -553,13 +762,13 @@ Remember: ONLY ONE JSON block, even if creating entries for multiple days or pro
             </div>
         `;
 
-        document.body.appendChild(dialog);
+                    document.body.appendChild(dialog);
 
-        // Render entries
-        const entryList = document.getElementById('trEntryList');
-        entries.forEach((entry, index) => {
-            const entryDiv = document.createElement('div');
-            entryDiv.style.cssText = `
+                    // Render entries
+                    const entryList = document.getElementById('trEntryList');
+                    entries.forEach((entry, index) => {
+                        const entryDiv = document.createElement('div');
+                        entryDiv.style.cssText = `
                 padding: 15px;
                 margin-bottom: 10px;
                 border: 2px solid #dee2e6;
@@ -568,194 +777,199 @@ Remember: ONLY ONE JSON block, even if creating entries for multiple days or pro
                 transition: all 0.2s;
             `;
 
-            const dateFormatted = `${
-                entry.date.substr(6, 2)
-            }.${
-                entry.date.substr(4, 2)
-            }.${
-                entry.date.substr(0, 4)
-            }`;
+                        const dateFormatted = `${
+                            entry.date.substr(6, 2)
+                        }.${
+                            entry.date.substr(4, 2)
+                        }.${
+                            entry.date.substr(0, 4)
+                        }`;
 
-            entryDiv.innerHTML = `
+                        entryDiv.innerHTML = `
                 <div style="display: flex; align-items: center; gap: 15px;">
                     <input type="checkbox" checked data-index="${index}" style="width: 20px; height: 20px; cursor: pointer;">
                     <div style="flex: 1;">
                         <div style="font-weight: bold; margin-bottom: 5px;">📅 ${dateFormatted} - ${
-                entry.hours
-            }h</div>
+                            entry.hours
+                        }h</div>
                         <div style="color: #666; font-size: 14px; margin-bottom: 3px;">📁 ${
-                entry.projectId
-            } / ${
-                entry.taskId
-            }</div>
+                            entry.projectId
+                        } / ${
+                            entry.taskId
+                        }</div>
                         <div style="color: #333;">📝 ${
-                entry.description
-            }</div>
+                            entry.description
+                        }</div>
                     </div>
                 </div>
             `;
 
-            entryList.appendChild(entryDiv);
+                        entryList.appendChild(entryDiv);
 
-            // Click to edit
-            entryDiv.onclick = (e) => {
-                if (e.target.type !== 'checkbox') {
-                    const input = document.getElementById('trEntryEditInput');
-                    input.value = `Change entry ${
-                        index + 1
-                    } to: `;
-                    input.focus();
-                }
-            };
-        });
+                        // Click to edit
+                        entryDiv.onclick = (e) => {
+                            if (e.target.type !== 'checkbox') {
+                                const input = document.getElementById('trEntryEditInput');
+                                input.value = `Change entry ${
+                                    index + 1
+                                } to: `;
+                                input.focus();
+                            }
+                        };
+                    });
 
-        // Event handlers
-        document.getElementById('trImportSelected').onclick = () => {
-            const selected = [];
-            document.querySelectorAll('#trEntryList input[type="checkbox"]:checked').forEach(cb => {
-                selected.push(entries[parseInt(cb.dataset.index)]);
-            });
+                    // Event handlers
+                    document.getElementById('trImportSelected').onclick = () => {
+                        const selected = [];
+                        document.querySelectorAll('#trEntryList input[type="checkbox"]:checked').forEach(cb => {
+                            selected.push(entries[parseInt(cb.dataset.index)]);
+                        });
 
-            if (selected.length > 0) {
-                this.importTimeEntries(selected);
-                dialog.remove();
-            } else {
-                alert('Please select at least one entry to import');
-            }
-        };
+                        if (selected.length > 0) {
+                            this.importTimeEntries(selected);
+                            dialog.remove();
+                        } else {
+                            alert('Please select at least one entry to import');
+                        }
+                    };
 
-        document.getElementById('trCancelReview').onclick = () => {
-            dialog.remove();
-        };
+                    document.getElementById('trCancelReview').onclick = () => {
+                        dialog.remove();
+                    };
 
-        document.getElementById('trEntryEditInput').onkeypress = async (e) => {
-            if (e.key === 'Enter' && e.target.value.trim()) {
-                const message = e.target.value.trim();
-                dialog.remove();
-                await this.sendMessage(message);
-            }
-        };
-    },
+                    document.getElementById('trEntryEditInput').onkeypress = async (e) => {
+                        if (e.key === 'Enter' && e.target.value.trim()) {
+                            const message = e.target.value.trim();
+                            dialog.remove();
+                            await this.sendMessage(message);
+                        }
+                    };
+                },
 
-    // Import time entries
-    importTimeEntries: async function (entries) {
-        console.log('Importing time entries from AI:', entries);
+                // Import time entries
+                importTimeEntries: async function (entries) {
+                    console.log('Importing time entries from AI:', entries);
 
-        // Validate entries
-        const validEntries = entries.filter(entry => {
-            return entry.date && entry.projectId && entry.hours && entry.description;
-        });
+                    // Validate entries
+                    const validEntries = entries.filter(entry => {
+                        return entry.date && entry.projectId && entry.hours && entry.description;
+                    });
 
-        if (validEntries.length === 0) {
-            alert('No valid entries to import');
-            return;
-        }
+                    if (validEntries.length === 0) {
+                        alert('No valid entries to import');
+                        return;
+                    }
 
-        // Call the recording function
-        const error = await TimeRecordingUI.recordTimeEntries(validEntries);
-        //when error, => task ai to fix it 
-        if (error) {
-            
-            this.sendMessage(`one or more Errors occured, please try again. Errors: ${error.map(err => 
-                `${err.date}: ${err.error}`
-            ).join('\n')}
-            Entries: ${JSON.stringify(validEntries)}
+                    // Call the recording function
+                    const error = await TimeRecordingUI.recordTimeEntries(validEntries);
+                    // when error, => task ai to fix it
+                    if (error) {
+
+                        this.sendMessage(`one or more Errors occured, please try again. Errors: ${
+                            error.map(err => `${
+                                err.date
+                            }: ${
+                                err.error
+                            }`).join('\n')
+                        }
+            Entries: ${
+                            JSON.stringify(validEntries)
+                        }
             `);
 
-            return;
-        }
-        this.addMessage('model', `✅ Successfully prepared ${
-            validEntries.length
-        } time ${
-            validEntries.length === 1 ? 'entry' : 'entries'
-        } for import`);
-    },
+                        return;
+                    }
+                    this.addMessage('model', `✅ Successfully prepared ${
+                        validEntries.length
+                    } time ${
+                        validEntries.length === 1 ? 'entry' : 'entries'
+                    } for import`);
+                },
 
-    // Add message to chat
-    addMessage: function (sender, content, data = null) {
-        const container = document.getElementById('trAIChatMessages');
-        if (! container) 
-            return;
-        
+                // Add message to chat
+                addMessage: function (sender, content, data = null) {
+                    const container = document.getElementById('trAIChatMessages');
+                    if (! container) 
+                        return;
+                    
 
 
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `tr-ai-message tr-ai-message-${sender}`;
-        messageDiv.style.marginBottom = '10px';
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = `tr-ai-message tr-ai-message-${sender}`;
+                    messageDiv.style.marginBottom = '10px';
 
-        // Process content for display
-        let displayContent = content;
-        if (! displayContent.includes('<pre')) {
-            displayContent = displayContent.replace(/\n/g, '<br>');
-        }
+                    // Process content for display
+                    let displayContent = content;
+                    if (! displayContent.includes('<pre')) {
+                        displayContent = displayContent.replace(/\n/g, '<br>');
+                    }
 
-        messageDiv.innerHTML = `
+                    messageDiv.innerHTML = `
             <div style="font-size: 11px; color: #666; margin-bottom: 5px; font-weight: bold;">
                 ${
-            sender === 'user' ? '👤 You' : '🤖 AI Assistant'
-        }
+                        sender === 'user' ? '👤 You' : '🤖 AI Assistant'
+                    }
             </div>
             <div style="font-size: 13px; line-height: 1.5;">${displayContent}</div>
         `;
 
-        container.appendChild(messageDiv);
+                    container.appendChild(messageDiv);
 
-        // Store in history
-        this.conversationHistory.push({sender: sender, content: content, data: data, timestamp: new Date()});
+                    // Store in history
+                    this.conversationHistory.push({sender: sender, content: content, data: data, timestamp: new Date()});
 
-        // Trim history if too long
-        if (this.conversationHistory.length > this.maxHistoryLength) {
-            this.conversationHistory = this.conversationHistory.slice(-this.maxHistoryLength);
-        }
+                    // Trim history if too long
+                    if (this.conversationHistory.length > this.maxHistoryLength) {
+                        this.conversationHistory = this.conversationHistory.slice(-this.maxHistoryLength);
+                    }
 
-        // Scroll to bottom
-        container.scrollTop = container.scrollHeight;
-    },
+                    // Scroll to bottom
+                    container.scrollTop = container.scrollHeight;
+                },
 
-    // Show typing indicator
-    showTypingIndicator: function () {
-        const container = document.getElementById('trAIChatMessages');
-        if (! container) 
-            return;
-        
-
-
-        const indicator = document.createElement('div');
-        indicator.id = 'trAITypingIndicator';
-        indicator.className = 'tr-ai-message tr-ai-message-assistant';
-        indicator.style.marginBottom = '10px';
-        indicator.innerHTML = '<div style="color: #666; font-style: italic;">🤖 AI is thinking...</div>';
-
-        container.appendChild(indicator);
-        container.scrollTop = container.scrollHeight;
-    },
-
-    // Hide typing indicator
-    hideTypingIndicator: function () {
-        const indicator = document.getElementById('trAITypingIndicator');
-        if (indicator) 
-            indicator.remove();
-        
+                // Show typing indicator
+                showTypingIndicator: function () {
+                    const container = document.getElementById('trAIChatMessages');
+                    if (! container) 
+                        return;
+                    
 
 
-    },
+                    const indicator = document.createElement('div');
+                    indicator.id = 'trAITypingIndicator';
+                    indicator.className = 'tr-ai-message tr-ai-message-assistant';
+                    indicator.style.marginBottom = '10px';
+                    indicator.innerHTML = '<div style="color: #666; font-style: italic;">🤖 AI is thinking...</div>';
 
-    // Clear chat history
-    clearChat: function () {
-        const container = document.getElementById('trAIChatMessages');
-        if (container) {
-            container.innerHTML = '';
-        }
-        this.conversationHistory = [];
-        this.initializeChat();
-    },
+                    container.appendChild(indicator);
+                    container.scrollTop = container.scrollHeight;
+                },
 
-    // Export conversation
-    exportConversation: function () {
-        return this.conversationHistory;
-    }
-};
-// Time Recording Calendar - API Service Module (UPDATED with real SAP API)
+                // Hide typing indicator
+                hideTypingIndicator: function () {
+                    const indicator = document.getElementById('trAITypingIndicator');
+                    if (indicator) 
+                        indicator.remove();
+                    
+
+
+                },
+
+                // Clear chat history
+                clearChat: function () {
+                    const container = document.getElementById('trAIChatMessages');
+                    if (container) {
+                        container.innerHTML = '';
+                    }
+                    this.conversationHistory = [];
+                    this.initializeChat();
+                },
+
+                // Export conversation
+                exportConversation: function () {
+                    return this.conversationHistory;
+                }
+            };
 window.TimeRecordingAPI = {
     csrfToken: null,
     holidays: {},
@@ -1268,47 +1482,162 @@ createTimeRecord: async function(recordData) {
     getHolidayInfo: function(date) {
         const dateStr = date.toISOString().split('T')[0];
         return this.holidays[dateStr] || null;
+    },
+
+    // Fetch historical records for N months (for AI context)
+    fetchHistoricalRecords: async function(months) {
+        const config = TimeRecordingConfig.sap;
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - months);
+        
+        const startStr = TimeRecordingUtils.formatDate(startDate);
+        const endStr = TimeRecordingUtils.formatDate(endDate);
+        
+        TimeRecordingUtils.log('info', `Loading ${months} months of historical records (${startStr} to ${endStr})...`);
+        
+        try {
+            // Fetch in monthly batches to avoid overwhelming the server
+            const allRecords = [];
+            const current = new Date(startDate);
+            
+            while (current < endDate) {
+                const batchEnd = new Date(current);
+                batchEnd.setMonth(batchEnd.getMonth() + 1);
+                if (batchEnd > endDate) batchEnd.setTime(endDate.getTime());
+                
+                const batchStartStr = TimeRecordingUtils.formatDate(current);
+                const batchEndStr = TimeRecordingUtils.formatDate(batchEnd);
+                
+                const requests = [
+                    `TimeRecordS4Set?sap-client=${this.SAP_CLIENT}&$filter=Pernr%20eq%20%27${config.userPernr}%27%20and%20RecordDate%20ge%20%27${batchStartStr}%27%20and%20RecordDate%20le%20%27${batchEndStr}%27`
+                ];
+                
+                const response = await this.executeBatchRequest(requests);
+                
+                if (response && response[0]?.d?.results) {
+                    allRecords.push(...response[0].d.results);
+                }
+                
+                current.setMonth(current.getMonth() + 1);
+                
+                // Small delay between batches
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+            
+            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months`);
+            return allRecords;
+            
+        } catch (error) {
+            TimeRecordingUtils.log('error', 'Failed to fetch historical records:', error);
+            return [];
+        }
+    },
+
+    // Summarize historical records for AI context (reduce token usage)
+    summarizeHistoricalRecords: function(records) {
+        if (!records || records.length === 0) return null;
+        
+        const projectHours = {};
+        const monthlyBreakdown = {};
+        const descriptions = {};
+        
+        records.forEach(record => {
+            const hours = parseFloat(record.Duration) || 0;
+            const projKey = `${record.AccProjId || 'unknown'}|${record.AccTaskPspId || ''}`;
+            const month = record.RecordDate ? record.RecordDate.substring(0, 6) : 'unknown';
+            const desc = record.Content || '';
+            
+            // Aggregate hours per project
+            if (!projectHours[projKey]) {
+                projectHours[projKey] = { 
+                    totalHours: 0, 
+                    count: 0, 
+                    projectId: record.AccProjId,
+                    taskId: record.AccTaskPspId,
+                    projectDesc: record.AccProjDesc || '',
+                    taskDesc: record.AccTaskPspDesc || '',
+                    accountInd: record.AccountInd || '10'
+                };
+            }
+            projectHours[projKey].totalHours += hours;
+            projectHours[projKey].count += 1;
+            
+            // Monthly breakdown
+            if (!monthlyBreakdown[month]) {
+                monthlyBreakdown[month] = { totalHours: 0, entries: 0 };
+            }
+            monthlyBreakdown[month].totalHours += hours;
+            monthlyBreakdown[month].entries += 1;
+            
+            // Collect unique description patterns per project
+            if (desc && desc.length > 3) {
+                if (!descriptions[projKey]) descriptions[projKey] = new Set();
+                if (descriptions[projKey].size < 5) {
+                    descriptions[projKey].add(desc.substring(0, 100));
+                }
+            }
+        });
+        
+        // Sort projects by total hours
+        const topProjects = Object.entries(projectHours)
+            .sort((a, b) => b[1].totalHours - a[1].totalHours)
+            .slice(0, 20)
+            .map(([key, data]) => ({
+                ...data,
+                avgHoursPerEntry: (data.totalHours / data.count).toFixed(2),
+                sampleDescriptions: descriptions[key] ? Array.from(descriptions[key]) : []
+            }));
+        
+        return {
+            totalRecords: records.length,
+            periodStart: records.reduce((min, r) => r.RecordDate < min ? r.RecordDate : min, records[0].RecordDate),
+            periodEnd: records.reduce((max, r) => r.RecordDate > max ? r.RecordDate : max, records[0].RecordDate),
+            topProjects: topProjects,
+            monthlyBreakdown: monthlyBreakdown,
+            totalHours: Object.values(projectHours).reduce((sum, p) => sum + p.totalHours, 0).toFixed(1)
+        };
     }
 };
-// Time Recording Calendar - Calendar Core Module (UPDATED)
-
 window.TimeRecordingCalendar = {
     currentMonth: new Date().getMonth(),
     currentYear: new Date().getFullYear(),
     monthData: {},
-    
+
     // Initialize calendar
-    init: async function() {
+    init: async function () {
         this.currentMonth = new Date().getMonth();
         this.currentYear = new Date().getFullYear();
-        
+
         await this.loadCurrentMonth();
         return true;
     },
-    
+
     // Load data for current month
-    loadCurrentMonth: async function() {
+    loadCurrentMonth: async function () {
         const year = this.currentYear;
         const month = this.currentMonth;
-        
-        TimeRecordingUtils.log('info', `Loading calendar for ${month + 1}/${year}`);
-        
+
+        TimeRecordingUtils.log('info', `Loading calendar for ${
+            month + 1
+        }/${year}`);
+
         // Fetch time records
         const records = await TimeRecordingAPI.fetchMonthRecords(year, month);
-        
+
         // Build month data
         this.monthData = this.buildMonthData(year, month, records);
-        
+
         // Update UI
         if (window.TimeRecordingUI) {
             window.TimeRecordingUI.renderCalendar(this.monthData);
         }
-        
+
         return this.monthData;
     },
-    
+
     // Build month data structure (UPDATED to include all days)
-    buildMonthData: function(year, month, records) {
+    buildMonthData: function (year, month, records) {
         const data = {
             year: year,
             month: month,
@@ -1318,57 +1647,58 @@ window.TimeRecordingCalendar = {
             requiredHours: 0,
             completionRate: 0
         };
-        
+
         const firstDay = new Date(year, month, 1);
         const lastDay = new Date(year, month + 1, 0);
-        
+
         // Start from the beginning of the week
         const startDate = new Date(firstDay);
         const firstDayOfWeek = startDate.getDay() || 7; // Convert Sunday (0) to 7
-        startDate.setDate(startDate.getDate() - firstDayOfWeek + 1); // Start from Monday
-        
+        startDate.setDate(startDate.getDate() - firstDayOfWeek + 1);
+        // Start from Monday
+
         // End at the end of the week
         const endDate = new Date(lastDay);
         const lastDayOfWeek = endDate.getDay() || 7;
         if (lastDayOfWeek < 7) {
             endDate.setDate(endDate.getDate() + (7 - lastDayOfWeek));
         }
-        
+
         // Build day data for ALL days (including weekends)
         const current = new Date(startDate);
         while (current <= endDate) {
             const dayData = this.buildDayData(current, records);
             data.days.push(dayData);
-            
+
             // Count totals for current month only (excluding weekends)
-            if (current.getMonth() === month && !dayData.isWeekend) {
-                if (dayData.isWorkDay && !dayData.isHoliday && !dayData.isFuture) {
+            if (current.getMonth() === month && ! dayData.isWeekend) {
+                if (dayData.isWorkDay && ! dayData.isHoliday && ! dayData.isFuture) {
                     data.requiredHours += TimeRecordingConfig.calendar.dailyQuota;
                     data.totalHours += dayData.totalHours;
                 }
             }
-            
+
             current.setDate(current.getDate() + 1);
         }
-        
+
         // Calculate completion rate
         if (data.requiredHours > 0) {
             data.completionRate = Math.round((data.totalHours / data.requiredHours) * 100);
         }
-        
+
         return data;
     },
-    
+
     // Build data for a single day (UPDATED)
-    buildDayData: function(date, records) {
+    buildDayData: function (date, records) {
         const dateKey = TimeRecordingUtils.formatDate(date);
         const dayRecords = records[dateKey] || [];
-        
+
         const dayData = {
             date: new Date(date),
             dateKey: dateKey,
             displayDate: date.getDate(),
-            dayName: date.toLocaleDateString('en-US', { weekday: 'short' }),
+            dayName: date.toLocaleDateString('en-US', {weekday: 'short'}),
             isCurrentMonth: date.getMonth() === this.currentMonth,
             isWeekend: TimeRecordingUtils.isWeekend(date),
             isToday: TimeRecordingUtils.isToday(date),
@@ -1381,15 +1711,15 @@ window.TimeRecordingCalendar = {
             status: 'none',
             color: ''
         };
-        
+
         // Determine if it's a work day (excluding weekends)
-        dayData.isWorkDay = !dayData.isWeekend && dayData.isCurrentMonth;
-        
+        dayData.isWorkDay = ! dayData.isWeekend && dayData.isCurrentMonth;
+
         // Calculate total hours
         dayData.totalHours = TimeRecordingUtils.calculateTotalHours(dayRecords);
-        
+
         // Determine status and color
-        if (!dayData.isCurrentMonth) {
+        if (! dayData.isCurrentMonth) {
             dayData.status = 'other-month';
             dayData.color = TimeRecordingConfig.ui.colors.weekend;
         } else if (dayData.isWeekend) {
@@ -1411,63 +1741,107 @@ window.TimeRecordingCalendar = {
             dayData.status = 'missing';
             dayData.color = TimeRecordingConfig.ui.colors.missing;
         }
-        
+
         return dayData;
     },
-    
+
     // Navigate to previous month
-    previousMonth: async function() {
-        this.currentMonth--;
+    previousMonth: async function () {
+        this.currentMonth --;
         if (this.currentMonth < 0) {
             this.currentMonth = 11;
-            this.currentYear--;
+            this.currentYear --;
         }
         await this.loadCurrentMonth();
     },
-    
+
     // Navigate to next month
-    nextMonth: async function() {
-        this.currentMonth++;
+    nextMonth: async function () {
+        this.currentMonth ++;
         if (this.currentMonth > 11) {
             this.currentMonth = 0;
-            this.currentYear++;
+            this.currentYear ++;
         }
         await this.loadCurrentMonth();
     },
-    
+
     // Navigate to today
-    goToToday: async function() {
+    goToToday: async function () {
         const today = new Date();
         this.currentMonth = today.getMonth();
         this.currentYear = today.getFullYear();
         await this.loadCurrentMonth();
     },
-    
+
     // Refresh current month
-    refresh: async function() {
+    refresh: async function () {
         TimeRecordingUtils.log('info', 'Refreshing calendar data...');
         await this.loadCurrentMonth();
     },
-    
+
     // Get current month data
-    getCurrentMonthData: function() {
+    getCurrentMonthData: function () {
         return this.monthData;
     },
     // based on the week number ( when 0 = current week , 1 = next week , -1 = last week )
     // return all recorded times of that week as an json array
     // use the calenders data and if not loaded then load more.
-    getTimes(relativeWeek) {
-        const weekNumber = TimeRecordingUtils.getWeekNumber(new Date()) + relativeWeek;
+    getTimes(relativeWeek = 0, dateRange = null, surroundingWeeks = false) { // Helper: normalize a date input (string YYYYMMDD or Date)
+        const parseDate = (d) => {
+            if (d instanceof Date) 
+                return new Date(d);
+             // clone Date object
+            if (typeof d === "string") {
+                return new Date(d.slice(0, 4), // year
+                    d.slice(4, 6) - 1, // month (0-based)
+                    d.slice(6, 8) // day
+                );
+            }
+            throw new Error("Invalid date type; expected 'YYYYMMDD' string or Date");
+        };
+
+        // ------------------------------------------
+        // DATE RANGE MODE
+        // ------------------------------------------
+        if (Array.isArray(dateRange) && dateRange.length > 0) { // Parse first date
+            const start = parseDate(dateRange[0]);
+
+            // Parse second date, or use same if only one provided
+            const end = dateRange.length > 1 ? parseDate(dateRange[1]) : new Date(start);
+
+            // Expand by 1 week before & after if requested
+            if (surroundingWeeks) {
+                start.setDate(start.getDate() - 7);
+                end.setDate(end.getDate() + 7);
+            }
+
+            const records = this.monthData.days.filter(record => {
+                const d = new Date(record.date);
+                return d >= start && d <= end;
+            });
+
+            return JSON.stringify(records);
+        }
+
+        // ------------------------------------------
+        // RELATIVE WEEK MODE (default)
+        // ------------------------------------------
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() + relativeWeek * 7);
+
+        const targetWeek = TimeRecordingUtils.getWeekNumber(targetDate);
+        const targetYear = targetDate.getFullYear();
+
         const records = this.monthData.days.filter(record => {
-            const recordWeekNumber = TimeRecordingUtils.getWeekNumber(new Date(record.date));
-            return recordWeekNumber === weekNumber;
+            const d = new Date(record.date);
+            return(TimeRecordingUtils.getWeekNumber(d) === targetWeek && d.getFullYear() === targetYear);
         });
+
         return JSON.stringify(records);
-    },
+    }
 
 
 };
-// Time Recording Calendar - Configuration Module
 window.TimeRecordingConfig = {
     // SAP Configuration
     sap: {
@@ -1493,6 +1867,15 @@ window.TimeRecordingConfig = {
         year: new Date().getFullYear()
     },
     
+    // AI Configuration
+    ai: {
+        defaultHistoryMonths: 12,     // Default months of history to load
+        maxNonBillableHoursPerDay: 0.5, // Admin/non-billable max ~30 min/day
+        typicalBillableHoursPerDay: 7.5, // Typical development/billable hours
+        maxClipboardLength: 50000,    // Max clipboard text length to process
+        maxFileContextLength: 100000, // Max file context length
+    },
+
     // UI Configuration
     ui: {
         colors: {
@@ -1508,7 +1891,6 @@ window.TimeRecordingConfig = {
         autoRefresh: 300000 // Refresh every 5 minutes
     }
 };
-// Time Recording Calendar - Drag & Drop Module
 window.TimeRecordingDrag = {
     draggedElement: null,
     dragOffset: { x: 0, y: 0 },
@@ -1804,7 +2186,6 @@ window.TimeRecordingDrag = {
 document.addEventListener('DOMContentLoaded', () => {
     TimeRecordingDrag.initGlobalDragEvents();
 });
-// Time Recording Calendar - Edit Module (FIXED)
 window.TimeRecordingEdit = {
     currentRecord: null,
     editDialog: null,
@@ -2363,7 +2744,6 @@ window.TimeRecordingEdit = {
         return statusMap[status] || 'Unknown';
     }
 };
-// Time Recording Calendar - ICS Import Module
 window.TimeRecordingICS = {
     meetings: [],
     selectedMeetings: new Set(),
@@ -2884,9 +3264,6 @@ style.textContent += `
     }
 `;
 document.head.appendChild(style);
-/* eslint-disable no-unused-vars */
-/* eslint-disable no-undef */
-// Time Recording Calendar - UI Module (ENHANCED with Excel-like selection)
 window.TimeRecordingUI = {
     container: null,
     minimized: false,
@@ -2927,15 +3304,23 @@ window.TimeRecordingUI = {
                     <!-- AI Chat Panel -->
                     <div id="trAIPanel" style="background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); width: 400px; max-height: 90vh; display: none; flex-direction: column;">
                         <div style="background: linear-gradient(135deg, #764ba2, #667eea); padding: 15px; color: white; border-radius: 12px 12px 0 0;">
-                            <h3 style="margin: 0; font-size: 16px;">🤖 AI Assistant</h3>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <h3 style="margin: 0; font-size: 16px;">🤖 AI Assistant</h3>
+                                <div style="display: flex; gap: 6px;">
+                                    <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
+                                    <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
+                                    <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
+                                </div>
+                            </div>
                         </div>
+                        <input type="file" id="trAIFileInput" style="display: none;" accept=".txt,.csv,.json,.md,.log,.xml">
                         <div id="trAIChatContainer" style="flex: 1; overflow-y: auto; padding: 15px; max-height: 500px;">
                             <div id="trAIChatMessages" style="display: flex; flex-direction: column; gap: 10px;">
                                 <!-- Chat messages will appear here -->
                             </div>
                         </div>
                         <div style="padding: 15px; border-top: 1px solid #dee2e6;">
-                            <textarea id="trAIInput" placeholder="Describe what you worked on..." style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px; resize: vertical;"></textarea>
+                            <textarea id="trAIInput" placeholder="Describe what you worked on... e.g. 'I worked on the tower application refactoring on Monday'" style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px; resize: vertical;"></textarea>
                             <div style="display: flex; gap: 10px; margin-top: 10px;">
                                 <button id="trAISend" style="flex: 1; padding: 10px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">Send</button>
                                 <button id="trAIClear" style="padding: 10px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear</button>
@@ -3755,6 +4140,67 @@ window.TimeRecordingUI = {
             };
         }
 
+        // Load History button
+        if (document.getElementById('trAILoadHistory')) {
+            document.getElementById('trAILoadHistory').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    const defaultMonths = TimeRecordingConfig.ai?.defaultHistoryMonths || 12;
+                    const months = prompt(`How many months of historical records should I load?\n(More months = better context but slower loading)`, defaultMonths);
+                    if (months && !isNaN(parseInt(months))) {
+                        TimeRecordingAI.loadHistoricalRecords(parseInt(months));
+                    }
+                }
+            };
+        }
+
+        // Upload File button
+        if (document.getElementById('trAIUploadFile')) {
+            document.getElementById('trAIUploadFile').onclick = () => {
+                document.getElementById('trAIFileInput')?.click();
+            };
+        }
+
+        // File input change handler
+        if (document.getElementById('trAIFileInput')) {
+            document.getElementById('trAIFileInput').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file && window.TimeRecordingAI) {
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        TimeRecordingAI.processFileUpload(evt.target.result, file.name);
+                    };
+                    reader.onerror = () => {
+                        TimeRecordingAI.addMessage('model', '❌ Failed to read file. Please try again.');
+                    };
+                    reader.readAsText(file);
+                }
+                // Reset so the same file can be uploaded again
+                e.target.value = '';
+            };
+        }
+
+        // Paste Clipboard button
+        if (document.getElementById('trAIPasteClipboard')) {
+            document.getElementById('trAIPasteClipboard').onclick = async () => {
+                if (window.TimeRecordingAI) {
+                    try {
+                        const clipboardText = await navigator.clipboard.readText();
+                        if (clipboardText && clipboardText.trim()) {
+                            TimeRecordingAI.processClipboardContent(clipboardText);
+                        } else {
+                            TimeRecordingAI.addMessage('model', '📋 Clipboard is empty. Copy some text first and try again.');
+                        }
+                    } catch (err) {
+                        // Fallback: prompt user to paste manually
+                        const manualPaste = prompt('Could not access clipboard directly. Please paste your clipboard content here:');
+                        if (manualPaste && manualPaste.trim()) {
+                            TimeRecordingAI.processClipboardContent(manualPaste);
+                        }
+                    }
+                }
+            };
+        }
+
         // Enter key in AI input
         if (document.getElementById('trAIInput')) {
             document.getElementById('trAIInput').onkeypress = (e) => {
@@ -4106,7 +4552,6 @@ window.TimeRecordingUI = {
 
 
 };
-// Time Recording Calendar - Utilities Module
 window.TimeRecordingUtils = {
     // Date formatting utilities
     formatDate: function(date) {
@@ -4244,7 +4689,6 @@ window.TimeRecordingUtils = {
         return result;
     }
 };
-// Time Recording Calendar - Main Application
 (async function () {
     'use strict';
 
@@ -4270,7 +4714,7 @@ window.TimeRecordingUtils = {
             return;
         }
     }
-    TimeRecordingAI.init('AIzaSyCL-Erm69uT_MkRcFl9z3PbzUlpVfzo8S4');
+    TimeRecordingAI.init("AIzaSyCL-Erm69uT_MkRcFl9z3PbzUlpVfzo8S4");//api key
     // Initialize application
     async function initialize() {
         try { // Create UI first
