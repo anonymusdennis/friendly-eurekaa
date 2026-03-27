@@ -163,6 +163,8 @@ if (appcontent) {
                         opt.value = m.id;
                         opt.textContent = m.displayName;
                         opt.title = m.description;
+                        opt.style.color = '#333';
+                        opt.style.background = 'white';
                         if (m.id === currentModel) opt.selected = true;
                         dropdown.appendChild(opt);
                     });

@@ -156,6 +156,8 @@
                         opt.value = m.id;
                         opt.textContent = m.displayName;
                         opt.title = m.description;
+                        opt.style.color = '#333';
+                        opt.style.background = 'white';
                         if (m.id === currentModel) opt.selected = true;
                         dropdown.appendChild(opt);
                     });
@@ -3785,7 +3787,7 @@ window.TimeRecordingUI = {
                             <div style="padding: 6px 15px 0; display: flex; align-items: center; gap: 6px;">
                                 <label style="color: rgba(255,255,255,0.8); font-size: 11px; white-space: nowrap;">Model:</label>
                                 <select id="trAIModelSelect" style="flex: 1; background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 3px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; max-width: 260px;">
-                                    <option value="">Loading models...</option>
+                    <option value="" style="color: #333; background: white;">Loading models...</option>
                                 </select>
                             </div>
                         </div>
