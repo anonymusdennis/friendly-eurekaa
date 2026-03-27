@@ -2387,6 +2387,9 @@ window.TimeRecordingDrag = {
         // Load saved layouts
         this.loadLayouts();
         
+        // Initialize global mouse event handlers for dragging
+        this.initGlobalDragEvents();
+        
         // Make main panels draggable
         this.makeDraggable(document.getElementById('trMainView'));
         this.makeDraggable(document.getElementById('trAIPanel'));
@@ -2415,7 +2418,9 @@ window.TimeRecordingDrag = {
         handle.style.cursor = 'move';
         
         handle.addEventListener('mousedown', (e) => {
-            if (e.target.tagName === 'BUTTON') return; // Don't drag on buttons
+            // Don't drag on interactive elements (buttons, dropdowns, inputs)
+            const tag = e.target.tagName;
+            if (tag === 'BUTTON' || tag === 'SELECT' || tag === 'OPTION' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'LABEL') return;
             
             this.draggedElement = element;
             this.dragOffset.x = e.clientX - element.offsetLeft;
