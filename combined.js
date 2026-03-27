@@ -8,6 +8,7 @@ window.TimeRecordingAI = {
     historyLoaded: false,
     historyLoadingPromise: null,
     pendingFunctionCalls: [],
+    pendingDeletion: null,
 
     // Get current AI model endpoint from config
     getEndpoint: function () {
@@ -71,6 +72,36 @@ window.TimeRecordingAI = {
                     },
                     required: ["question"]
                 }
+            },
+            {
+                name: "updateExistingRecord",
+                description: "Update an existing time record. First call getRecordsForDate to find the record's Counter, then call this with the counter and fields to change. Only provide fields you want to modify — others are kept as-is.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        date: { type: "string", description: "Date of the record in YYYY-MM-DD format" },
+                        counter: { type: "string", description: "The Counter ID of the record to update (get this from getRecordsForDate)" },
+                        hours: { type: "number", description: "New duration in hours (optional — only if changing)" },
+                        description: { type: "string", description: "New description/content (optional — only if changing)" },
+                        projectId: { type: "string", description: "New project ID (optional — only if changing)" },
+                        taskId: { type: "string", description: "New task/PSP ID (optional — only if changing)" },
+                        accountInd: { type: "string", description: "New account indicator: '10' for billable, '90' for non-billable (optional)" }
+                    },
+                    required: ["date", "counter"]
+                }
+            },
+            {
+                name: "deleteExistingRecord",
+                description: "Delete an existing time record. First call getRecordsForDate to find the record's Counter, then call this. The user will be asked to confirm before deletion.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        date: { type: "string", description: "Date of the record in YYYY-MM-DD format" },
+                        counter: { type: "string", description: "The Counter ID of the record to delete (get this from getRecordsForDate)" },
+                        reason: { type: "string", description: "Brief reason for deletion (shown to user in confirmation)" }
+                    },
+                    required: ["date", "counter"]
+                }
             }
         ];
     },
@@ -113,6 +144,10 @@ window.TimeRecordingAI = {
                 return await TimeRecordingAPI.getProjectDetails(args.projectId);
             case 'askUser':
                 return this.handleAskUser(args);
+            case 'updateExistingRecord':
+                return await this.handleUpdateRecord(args);
+            case 'deleteExistingRecord':
+                return await this.handleDeleteRecord(args);
             default:
                 return { error: 'Unknown function: ' + name };
         }
@@ -135,6 +170,72 @@ window.TimeRecordingAI = {
         return { status: 'waiting_for_user_response', question: args.question };
     },
 
+    // Handle updating an existing time record
+    handleUpdateRecord: async function (args) {
+        try {
+            // Fetch the existing record by date and counter
+            const dateKey = args.date.replace(/-/g, '');
+            const record = await TimeRecordingEdit.fetchSingleRecord(dateKey, args.counter);
+            if (!record) {
+                return { error: 'Record not found with counter ' + args.counter + ' on ' + args.date };
+            }
+
+            // Apply only the fields that were provided
+            const updatedRecord = { ...record, Mode: 'U' };
+            if (args.hours !== undefined) updatedRecord.Duration = args.hours.toString();
+            if (args.description !== undefined) updatedRecord.Content = args.description;
+            if (args.projectId !== undefined) updatedRecord.AccProjId = args.projectId;
+            if (args.taskId !== undefined) updatedRecord.AccTaskPspId = args.taskId;
+            if (args.accountInd !== undefined) updatedRecord.AccountInd = args.accountInd;
+
+            // Build a summary of changes for the user
+            const changes = [];
+            if (args.hours !== undefined) changes.push('hours: ' + record.Duration + ' \u2192 ' + args.hours);
+            if (args.description !== undefined) changes.push('description: "' + (record.Content || '').substring(0, 40) + '" \u2192 "' + args.description.substring(0, 40) + '"');
+            if (args.projectId !== undefined) changes.push('project: ' + record.AccProjId + ' \u2192 ' + args.projectId);
+            if (args.taskId !== undefined) changes.push('task: ' + record.AccTaskPspId + ' \u2192 ' + args.taskId);
+            if (args.accountInd !== undefined) changes.push('billable: ' + record.AccountInd + ' \u2192 ' + args.accountInd);
+
+            this.addMessage('model', '\u270F\uFE0F **Updating record** (Counter: ' + args.counter + ', Date: ' + args.date + '):\n' + changes.map(c => '\u2022 ' + c).join('\n'));
+
+            const result = await TimeRecordingEdit.updateTimeRecord(updatedRecord);
+            if (result) {
+                TimeRecordingCalendar.refresh();
+                this.addMessage('model', '\u2705 Record updated successfully!');
+                return { success: true, changes: changes };
+            } else {
+                return { error: 'SAP API returned no result — update may have failed' };
+            }
+        } catch (error) {
+            return { error: 'Failed to update record: ' + error.message };
+        }
+    },
+
+    // Handle deleting an existing time record
+    handleDeleteRecord: async function (args) {
+        try {
+            const dateKey = args.date.replace(/-/g, '');
+            const record = await TimeRecordingEdit.fetchSingleRecord(dateKey, args.counter);
+            if (!record) {
+                return { error: 'Record not found with counter ' + args.counter + ' on ' + args.date };
+            }
+
+            // Show what will be deleted and ask for confirmation
+            const desc = record.Content || '(no description)';
+            const hours = record.Duration || '?';
+            const project = record.AccProjId || '(no project)';
+            const reason = args.reason || 'User requested deletion';
+
+            this.addMessage('model', '\u{1F5D1}\uFE0F **Delete request** for record on ' + args.date + ':\n\u2022 ' + hours + 'h \u2014 ' + project + '\n\u2022 "' + desc + '"\n\u2022 Reason: ' + reason + '\n\nType **"yes, delete"** to confirm or **"cancel"** to abort.');
+
+            // Store pending deletion for confirmation
+            this.pendingDeletion = { record: record, date: args.date, counter: args.counter };
+            return { status: 'waiting_for_deletion_confirmation', record: { date: args.date, counter: args.counter, hours: hours, description: desc } };
+        } catch (error) {
+            return { error: 'Failed to prepare deletion: ' + error.message };
+        }
+    },
+
     // Initialize AI module
     init: function (apiKey) {
         this.apiKey = apiKey;
@@ -151,7 +252,7 @@ window.TimeRecordingAI = {
         }
 
         if (this.conversationHistory.length === 0) {
-            this.addMessage('model', 'Hello! I\'m your Time Recording AI Assistant (powered by **' + this.getModelName() + '**). Here\'s what I can do:\n\n\u{1F4DD} **Record time** \u2014 Tell me what you did: "I refactored the auth module on Monday"\n\u{1F50D} **Smart matching** \u2014 I\'ll find the best project/task and ASK you if I\'m unsure\n\u{1F4CA} **Load history** \u2014 Click \u{1F4CA} to load past records so I understand your work patterns\n\u{1F4CE} **Upload context** \u2014 Click \u{1F4CE} to upload a project/task reference file\n\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard\n\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day\n\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong\n\u{1F527} **Switch model** \u2014 Type "switch to pro" or "switch to flash"\n\nJust describe what you worked on and I\'ll suggest accurate time entries!');
+            this.addMessage('model', 'Hello! I\'m your Time Recording AI Assistant (powered by **' + this.getModelName() + '**). Here\'s what I can do:\n\n\u{1F4DD} **Record time** \u2014 Tell me what you did: "I refactored the auth module on Monday"\n\u270F\uFE0F **Edit records** \u2014 "Change my Monday entry to 6 hours" or "Update the description on yesterday\'s entry"\n\u{1F5D1}\uFE0F **Delete records** \u2014 "Delete the admin entry from yesterday"\n\u{1F50D} **Smart matching** \u2014 I\'ll find the best project/task and ASK you if I\'m unsure\n\u{1F4CA} **Load history** \u2014 Click \u{1F4CA} to load past records so I understand your work patterns\n\u{1F4CE} **Upload context** \u2014 Click \u{1F4CE} to upload a project/task reference file\n\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard\n\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day\n\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong\n\u{1F527} **Switch model** \u2014 Type "switch to pro" or "switch to flash"\n\nJust describe what you worked on and I\'ll suggest accurate time entries!');
 
             // Proactive: check for missing days and offer to help
             if (TimeRecordingConfig.ai?.enableProactiveSuggestions) {
@@ -273,6 +374,34 @@ window.TimeRecordingAI = {
             return;
         }
 
+        // Handle pending deletion confirmation
+        if (this.pendingDeletion) {
+            const pending = this.pendingDeletion;
+            this.pendingDeletion = null;
+
+            if (lowerMsg === 'yes, delete' || lowerMsg === 'yes delete' || lowerMsg === 'yes' || lowerMsg === 'confirm') {
+                this.addMessage('user', message);
+                try {
+                    const deletePayload = { ...pending.record, Mode: 'D' };
+                    const result = await TimeRecordingEdit.updateTimeRecord(deletePayload);
+                    if (result) {
+                        TimeRecordingCalendar.refresh();
+                        this.addMessage('model', '\u2705 Record deleted successfully! (Counter: ' + pending.counter + ' on ' + pending.date + ')');
+                    } else {
+                        this.addMessage('model', '\u274C Deletion may have failed \u2014 SAP returned no result. Please check the calendar.');
+                    }
+                } catch (error) {
+                    this.addMessage('model', '\u274C Failed to delete record: ' + error.message);
+                }
+                return;
+            } else {
+                this.addMessage('user', message);
+                this.addMessage('model', '\u274C Deletion cancelled.');
+                // Don't return — let the message flow to the AI as a normal message
+                if (lowerMsg === 'cancel' || lowerMsg === 'no') return;
+            }
+        }
+
         this.addMessage('user', message);
 
         const context = await this.prepareEnhancedContext();
@@ -372,7 +501,7 @@ window.TimeRecordingAI = {
             fileBlock = '\n\n## USER CONTEXT FILE ("' + (context.fileContextName || 'unknown') + '")\n' + context.fileContext.substring(0, 20000);
         }
 
-        return '# ROLE\nYou are a precise, intelligent Time Recording Assistant for SAP CATS. You help a SOFTWARE DEVELOPER record accurate work time.\n\n# REASONING PROCESS\nFor each user request, follow these steps:\n1. **PARSE** \u2014 What did they do? When? For how long?\n2. **MATCH** \u2014 Find the best project/task from their favorites or history\n3. **VERIFY** \u2014 If match confidence < 80%, call `askUser` to clarify instead of guessing\n4. **DISTRIBUTE** \u2014 Apply realistic hours (see rules)\n5. **VALIDATE** \u2014 Ensure each day totals 8.0h, descriptions are unique and specific\n\n# TIME DISTRIBUTION RULES\n- Development/billable work: 7.0\u20137.5h/day (AccountInd: "10") \u2014 THIS IS THE MAJORITY\n- Admin/non-billable: MAX 0.5h/day (AccountInd: "90") \u2014 emails, standups, org tasks\n- NEVER: 8h "reading emails", 8h "admin", same description for multiple days\n- ALWAYS: Include ~0.5h admin entry per day unless user says otherwise\n\n# DATE PARSING\nResolve natural language: "Monday" \u2192 most recent Monday, "yesterday" \u2192 yesterday, "last week" \u2192 last week\'s workdays, "the 15th" \u2192 15th of current month. Output as YYYYMMDD.\n\n# WHEN UNCERTAIN\nCall `askUser` with options rather than guessing. Example: "I\'m not sure if this is Tower Application or Tower Platform. Which one?"\n\n# CURRENT CONTEXT\n- Today: ' + context.currentDate + '\n- Selected days: ' + (context.selectedDays.length > 0 ? context.selectedDays.join(', ') : 'none') + '\n- Missing days: ' + (context.missingDays.length > 0 ? context.missingDays.length + ': ' + context.missingDays.slice(0, 8).join(', ') + (context.missingDays.length > 8 ? '...' : '') : 'none') + '\n- Month: ' + (context.monthSummary?.completionRate || 0) + '% complete (' + (context.monthSummary?.totalHours || 0) + 'h / ' + (context.monthSummary?.requiredHours || 0) + 'h)\n\n# RECENT RECORDINGS (for pattern matching)\nLast week: ' + JSON.stringify(TimeRecordingCalendar.getTimes(-1)) + '\nThis week: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0)) + '\n' + (context.selectedDays.length > 0 ? 'Selected days data: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0, context.selectedDays, true)) : '') + historyBlock + fileBlock + '\n\n# AVAILABLE PROJECTS (use EXACT IDs)\n' + context.favorites.map(f => '- "' + f.name + '": ' + f.projectDesc + ' (ProjectID: ' + f.projectId + ', TaskID: ' + f.taskId + ')').join('\n') + '\n\n## Priority projects (use if they match the work description):\nIN 2911.IN.0074-01 \u2014 Employee information, info nuggets\nIN 2911.IN.0072-01..11 \u2014 Meetings Tower (Application/Compute/DataCenter/Delivery/EndUser/ITMgmt/Network/Output/Platform/Security/Storage)\nIN 2911.IN.0073-01..11 \u2014 Idle Time Tower (same tower breakdown)\nAD 2911.AD.0005-01 \u2014 Local Leadership tasks\nAD 2911.AD.0006-01 \u2014 Local administrative work\nTR 2911.TR.0004-01..11 \u2014 Training Tower (same tower breakdown)\n\n# FEW-SHOT EXAMPLES\n\n**User:** "I worked on the application deployment pipeline on Monday"\n**Response:**\n```json\n{"entries":[{"AccountInd":"10","date":"20260323","projectId":"...","taskId":"...","hours":7.5,"description":"Implemented CI/CD pipeline improvements for application deployment, configured staging environment"},{"AccountInd":"90","date":"20260323","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Daily standup, email triage, team coordination"}]}\n```\n\n**User:** "Fill my missing days with platform work"\n**Response:** Generates unique entries for each missing day, varying descriptions like "Platform API endpoint optimization", "Platform monitoring dashboard updates", etc.\n\n# OUTPUT FORMAT\nWhen suggesting entries, output EXACTLY ONE JSON block:\n```json\n{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}\n```\n\n# RULES\n- If user asks a question, answer it \u2014 do not generate entries unless asked\n- Each day MUST total exactly 8.0 hours\n- Each description must be UNIQUE and SPECIFIC\n- NEVER guess project \u2014 call `askUser` when unsure\n- Combine ALL entries into ONE JSON block';
+        return '# ROLE\nYou are a precise, intelligent Time Recording Assistant for SAP CATS. You help a SOFTWARE DEVELOPER record, edit, and manage their work time.\n\n# CAPABILITIES\nYou can:\n1. **Create** new time entries (output JSON with entries array)\n2. **Edit** existing records \u2014 call `getRecordsForDate` to find the Counter, then call `updateExistingRecord` with changes\n3. **Delete** existing records \u2014 call `getRecordsForDate` to find the Counter, then call `deleteExistingRecord` (user must confirm)\n4. **Query** data \u2014 call `getMissingDays`, `getMonthSummary`, `getRecordsForDate`, `getFavorites`, `getProjectDetails`\n5. **Clarify** \u2014 call `askUser` when uncertain\n\n# EDITING WORKFLOW\nWhen the user asks to edit or change an existing record:\n1. First call `getRecordsForDate` to see what records exist on that date\n2. Identify the correct record by matching description, project, or hours\n3. If multiple records match, call `askUser` to clarify which one\n4. Call `updateExistingRecord` with the Counter and only the fields to change\n\nWhen the user asks to delete a record:\n1. First call `getRecordsForDate` to find the Counter\n2. Call `deleteExistingRecord` \u2014 the user will be asked to confirm before deletion happens\n\n# REASONING PROCESS\nFor each user request, follow these steps:\n1. **PARSE** \u2014 What did they do? When? For how long? Is this a create, edit, or delete?\n2. **MATCH** \u2014 Find the best project/task from their favorites or history\n3. **VERIFY** \u2014 If match confidence < 80%, call `askUser` to clarify instead of guessing\n4. **DISTRIBUTE** \u2014 Apply realistic hours (see rules)\n5. **VALIDATE** \u2014 Ensure each day totals 8.0h, descriptions are unique and specific\n\n# TIME DISTRIBUTION RULES\n- Development/billable work: 7.0\u20137.5h/day (AccountInd: "10") \u2014 THIS IS THE MAJORITY\n- Admin/non-billable: MAX 0.5h/day (AccountInd: "90") \u2014 emails, standups, org tasks\n- NEVER: 8h "reading emails", 8h "admin", same description for multiple days\n- ALWAYS: Include ~0.5h admin entry per day unless user says otherwise\n\n# DATE PARSING\nResolve natural language: "Monday" \u2192 most recent Monday, "yesterday" \u2192 yesterday, "last week" \u2192 last week\'s workdays, "the 15th" \u2192 15th of current month. Output as YYYYMMDD.\n\n# WHEN UNCERTAIN\nCall `askUser` with options rather than guessing. Example: "I\'m not sure if this is Tower Application or Tower Platform. Which one?"\n\n# CURRENT CONTEXT\n- Today: ' + context.currentDate + '\n- Selected days: ' + (context.selectedDays.length > 0 ? context.selectedDays.join(', ') : 'none') + '\n- Missing days: ' + (context.missingDays.length > 0 ? context.missingDays.length + ': ' + context.missingDays.slice(0, 8).join(', ') + (context.missingDays.length > 8 ? '...' : '') : 'none') + '\n- Month: ' + (context.monthSummary?.completionRate || 0) + '% complete (' + (context.monthSummary?.totalHours || 0) + 'h / ' + (context.monthSummary?.requiredHours || 0) + 'h)\n\n# RECENT RECORDINGS (for pattern matching)\nLast week: ' + JSON.stringify(TimeRecordingCalendar.getTimes(-1)) + '\nThis week: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0)) + '\n' + (context.selectedDays.length > 0 ? 'Selected days data: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0, context.selectedDays, true)) : '') + historyBlock + fileBlock + '\n\n# AVAILABLE PROJECTS (use EXACT IDs)\n' + context.favorites.map(f => '- "' + f.name + '": ' + f.projectDesc + ' (ProjectID: ' + f.projectId + ', TaskID: ' + f.taskId + ')').join('\n') + '\n\n## Priority projects (use if they match the work description):\nIN 2911.IN.0074-01 \u2014 Employee information, info nuggets\nIN 2911.IN.0072-01..11 \u2014 Meetings Tower (Application/Compute/DataCenter/Delivery/EndUser/ITMgmt/Network/Output/Platform/Security/Storage)\nIN 2911.IN.0073-01..11 \u2014 Idle Time Tower (same tower breakdown)\nAD 2911.AD.0005-01 \u2014 Local Leadership tasks\nAD 2911.AD.0006-01 \u2014 Local administrative work\nTR 2911.TR.0004-01..11 \u2014 Training Tower (same tower breakdown)\n\n# FEW-SHOT EXAMPLES\n\n**User:** "I worked on the application deployment pipeline on Monday"\n**Response:**\n```json\n{"entries":[{"AccountInd":"10","date":"20260323","projectId":"...","taskId":"...","hours":7.5,"description":"Implemented CI/CD pipeline improvements for application deployment, configured staging environment"},{"AccountInd":"90","date":"20260323","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Daily standup, email triage, team coordination"}]}\n```\n\n**User:** "Change my Monday entry from 7.5h to 6h and add a 1.5h meeting entry"\n**Response:** First calls `getRecordsForDate` for Monday, then calls `updateExistingRecord` to change hours to 6, then outputs JSON for the new 1.5h meeting entry.\n\n**User:** "Delete the admin entry from yesterday"\n**Response:** Calls `getRecordsForDate` for yesterday, identifies the admin entry (AccountInd: "90"), calls `deleteExistingRecord` with its Counter.\n\n# OUTPUT FORMAT\nWhen suggesting NEW entries, output EXACTLY ONE JSON block:\n```json\n{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}\n```\nFor edits and deletes, use the `updateExistingRecord` and `deleteExistingRecord` functions directly \u2014 do NOT output JSON.\n\n# RULES\n- If user asks a question, answer it \u2014 do not generate entries unless asked\n- Each day MUST total exactly 8.0 hours (for new entries)\n- Each description must be UNIQUE and SPECIFIC\n- NEVER guess project \u2014 call `askUser` when unsure\n- Combine ALL new entries into ONE JSON block\n- For edits: ALWAYS call `getRecordsForDate` first to get the Counter before calling `updateExistingRecord`\n- For deletes: ALWAYS call `getRecordsForDate` first to get the Counter before calling `deleteExistingRecord`';
     },
 
     // Build prompt for meeting imports
