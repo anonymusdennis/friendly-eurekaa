@@ -28,7 +28,7 @@ window.TimeRecordingAI = {
         return [
             {
                 name: "getMissingDays",
-                description: "Get a list of working days that are missing time records in the current month. Returns dates, display dates, and day names.",
+                description: "Get working days missing time records in the currently displayed calendar month. Returns date keys, formatted display dates, and day names.",
                 parameters: { type: "object", properties: {}, required: [] }
             },
             {

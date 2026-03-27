@@ -526,4 +526,3 @@ style.textContent += `
 document.head.appendChild(style);    }).toString() + ')();';
     document.head.appendChild(el);
 }
-ssssss
