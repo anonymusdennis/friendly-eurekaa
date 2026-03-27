@@ -519,57 +519,41 @@ createTimeRecord: async function(recordData) {
     },
 
     // Fetch historical records for N months (for AI context)
+    // Reuses fetchMonthRecords (the same per-day approach the calendar uses)
     fetchHistoricalRecords: async function(months) {
-        const config = TimeRecordingConfig.sap;
-        const endDate = new Date();
-        const startDate = new Date();
-        startDate.setMonth(startDate.getMonth() - months);
+        const now = new Date();
         
-        const startStr = TimeRecordingUtils.formatDate(startDate);
-        const endStr = TimeRecordingUtils.formatDate(endDate);
-        
-        TimeRecordingUtils.log('info', `Loading ${months} months of historical records (${startStr} to ${endStr})...`);
+        TimeRecordingUtils.log('info', `Loading ${months} months of historical records using monthly fetch...`);
         
         try {
-            // Fetch in monthly batches to avoid overwhelming the server
             const allRecords = [];
-            const current = new Date(startDate);
-            let batchCount = 0;
             
-            while (current < endDate) {
-                const batchEnd = new Date(current);
-                batchEnd.setMonth(batchEnd.getMonth() + 1);
-                if (batchEnd > endDate) batchEnd.setTime(endDate.getTime());
-                
-                const batchStartStr = TimeRecordingUtils.formatDate(current);
-                const batchEndStr = TimeRecordingUtils.formatDate(batchEnd);
-                batchCount++;
-                
-                const requests = [
-                    `TimeRecordS4Set?sap-client=${this.SAP_CLIENT}&$filter=Pernr%20eq%20%27${config.userPernr}%27%20and%20RecordDate%20ge%20%27${batchStartStr}%27%20and%20RecordDate%20le%20%27${batchEndStr}%27`
-                ];
+            // Walk backwards month by month, waiting for each to finish
+            for (let i = 0; i < months; i++) {
+                const targetDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                const year = targetDate.getFullYear();
+                const month = targetDate.getMonth();
+                const label = `${month + 1}/${year}`;
                 
                 try {
-                    const response = await this.executeBatchRequest(requests);
+                    TimeRecordingUtils.log('info', `  Fetching month ${i + 1}/${months}: ${label}...`);
+                    const monthRecords = await this.fetchMonthRecords(year, month);
                     
-                    if (response && response[0]?.d?.results) {
-                        const batchRecords = response[0].d.results;
-                        allRecords.push(...batchRecords);
-                        TimeRecordingUtils.log('info', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}): ${batchRecords.length} records`);
-                    } else {
-                        TimeRecordingUtils.log('warning', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}): No results in response`, response);
+                    // Flatten the {dateKey: [records]} map into a flat array
+                    let monthCount = 0;
+                    for (const dayRecords of Object.values(monthRecords)) {
+                        if (dayRecords && dayRecords.length > 0) {
+                            allRecords.push(...dayRecords);
+                            monthCount += dayRecords.length;
+                        }
                     }
-                } catch (batchError) {
-                    TimeRecordingUtils.log('warning', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}) failed: ${batchError.message}`);
+                    TimeRecordingUtils.log('info', `  Month ${label}: ${monthCount} records`);
+                } catch (monthError) {
+                    TimeRecordingUtils.log('warning', `  Month ${label} failed: ${monthError.message}`);
                 }
-                
-                current.setMonth(current.getMonth() + 1);
-                
-                // Small delay between batches
-                await new Promise(resolve => setTimeout(resolve, 300));
             }
             
-            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months (${batchCount} batches)`);
+            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months`);
             return allRecords;
             
         } catch (error) {
