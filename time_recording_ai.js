@@ -330,6 +330,32 @@ if (appcontent) {
                                 },
                                 required: ["date"]
                             }
+                        },
+                        {
+                            name: "createTimeEntry",
+                            description: "Create new time entries for the user. Shows a review dialog where the user can approve, edit, or reject entries before they are saved. Use this when you have determined the correct project, task, hours, and description for one or more days.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    entries: {
+                                        type: "array",
+                                        description: "Array of time entry objects to create",
+                                        items: {
+                                            type: "object",
+                                            properties: {
+                                                date: { type: "string", description: "Date in YYYYMMDD format (e.g. '20260206')" },
+                                                projectId: { type: "string", description: "Project ID (e.g. '2911.UM.0074')" },
+                                                taskId: { type: "string", description: "Task/PSP element ID (e.g. '2911.UM.0074-07-07-02')" },
+                                                hours: { type: "number", description: "Duration in hours (e.g. 7.5)" },
+                                                description: { type: "string", description: "Description of the work done" },
+                                                accountInd: { type: "string", description: "Account indicator: '10' for billable, '90' for non-billable. Default: '10'" }
+                                            },
+                                            required: ["date", "projectId", "taskId", "hours", "description"]
+                                        }
+                                    }
+                                },
+                                required: ["entries"]
+                            }
                         }
                     ];
                 },
@@ -390,6 +416,8 @@ if (appcontent) {
                             return this.handleAddCalendarNote(args);
                         case 'removeCalendarNote':
                             return this.handleRemoveCalendarNote(args);
+                        case 'createTimeEntry':
+                            return this.handleCreateTimeEntry(args);
                         default:
                             return { error: 'Unknown function: ' + name };
                     }
@@ -410,6 +438,31 @@ if (appcontent) {
                     }
                     this.addMessage('model', msg);
                     return { status: 'waiting_for_user_response', question: args.question };
+                },
+
+                // Handle createTimeEntry — show the review dialog for AI-proposed entries
+                handleCreateTimeEntry: function (args) {
+                    const entries = args.entries;
+                    if (!entries || entries.length === 0) {
+                        this.addMessage('model', '\u274C No entries provided to create.');
+                        return { error: 'No entries provided' };
+                    }
+
+                    // Validate and show in chat
+                    this.addMessage('model', '\u{1F4DD} Here are **' + entries.length + '** suggested time entries for your review:', { entries });
+
+                    // Run self-validation
+                    if (TimeRecordingConfig.ai?.enableSelfValidation !== false) {
+                        const warnings = this.validateEntries(entries);
+                        if (warnings.length > 0) {
+                            this.addMessage('model', '\u26A0\uFE0F **Validation warnings:**\n' + warnings.join('\n') + '\n\nYou can still import \u2014 or ask me to fix these.');
+                        }
+                    }
+
+                    // Show the review/import popup
+                    this.showEntryReviewDialog(entries);
+
+                    return { status: 'review_dialog_shown', entryCount: entries.length };
                 },
 
                 // Handle updating an existing time record
@@ -998,6 +1051,9 @@ if (appcontent) {
                                 // If the result was handled by function calling (askUser), don't process further
                                 if (result === '__ASKED_USER__') return;
 
+                                // If the result was handled by createTimeEntry (review dialog shown), don't process further
+                                if (result === '__CREATED_ENTRIES__') return;
+
                                 this.processAIResponse(result);
                                 return;
 
@@ -1359,6 +1415,12 @@ Today: ${context.currentDate}`;
                     if (name === 'askUser') {
                         this.hideTypingIndicator();
                         return '__ASKED_USER__';
+                    }
+
+                    // If createTimeEntry, the review dialog was shown — stop the chain
+                    if (name === 'createTimeEntry') {
+                        this.hideTypingIndicator();
+                        return '__CREATED_ENTRIES__';
                     }
 
                     // Send function result back to Gemini
