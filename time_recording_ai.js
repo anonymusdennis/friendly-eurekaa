@@ -17,19 +17,155 @@ if (appcontent) {
                 pendingFunctionCalls: [],
                 pendingDeletion: null,
                 aiNotes: [],
+                discoveredModels: [],
+                modelsLoaded: false,
 
-                // Get current AI model endpoint from config
+                // Get API base URL from config
+                getApiBaseUrl: function () {
+                    return TimeRecordingConfig.ai?.apiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
+                },
+
+                // Get current AI model endpoint — built dynamically from model name
                 getEndpoint: function () {
-                    const model = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
-                    const models = TimeRecordingConfig.ai?.availableModels || {};
-                    return models[model]?.endpoint || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent';
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        return `${this.getApiBaseUrl()}/${discovered.name}:generateContent`;
+                    }
+                    // Fallback: construct from model key
+                    return `${this.getApiBaseUrl()}/models/${modelKey}:generateContent`;
                 },
 
                 // Get current model name for display
                 getModelName: function () {
-                    const model = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
-                    const models = TimeRecordingConfig.ai?.availableModels || {};
-                    return models[model]?.name || 'Gemini 2.5 Flash';
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) return discovered.displayName;
+                    const fallback = TimeRecordingConfig.ai?.fallbackModels || {};
+                    return fallback[modelKey]?.name || modelKey;
+                },
+
+                // Get current model capabilities
+                getModelCapabilities: function () {
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        return {
+                            supportsThinking: discovered.supportsThinking,
+                            supportsFunctionCalling: discovered.supportsFunctionCalling,
+                            maxOutputTokens: discovered.maxOutputTokens,
+                            maxInputTokens: discovered.maxInputTokens
+                        };
+                    }
+                    // Default capabilities for unknown models
+                    return {
+                        supportsThinking: false,
+                        supportsFunctionCalling: true,
+                        maxOutputTokens: 8192,
+                        maxInputTokens: 1048576
+                    };
+                },
+
+                // Discover available models via Gemini ListModels API
+                listModels: async function () {
+                    if (!this.apiKey) return;
+                    try {
+                        const response = await fetch(
+                            `${this.getApiBaseUrl()}/models?key=${this.apiKey}`
+                        );
+                        if (!response.ok) {
+                            throw new Error('ListModels failed: ' + response.status);
+                        }
+                        const data = await response.json();
+                        if (!data.models || !Array.isArray(data.models)) {
+                            throw new Error('Invalid ListModels response');
+                        }
+
+                        // Filter for models that support generateContent
+                        const generateModels = data.models.filter(m =>
+                            m.supportedGenerationMethods &&
+                            m.supportedGenerationMethods.includes('generateContent')
+                        );
+
+                        // Map to our internal format
+                        this.discoveredModels = generateModels.map(m => {
+                            const id = m.name.replace('models/', '');
+                            const isThinking = id.includes('thinking') ||
+                                (m.description && m.description.toLowerCase().includes('thinking'));
+                            return {
+                                id: id,
+                                name: m.name,
+                                displayName: m.displayName || id,
+                                description: m.description || '',
+                                maxInputTokens: m.inputTokenLimit || 0,
+                                maxOutputTokens: m.outputTokenLimit || 0,
+                                supportsThinking: isThinking || id.includes('2.5'),
+                                supportsFunctionCalling: true,
+                                temperature: m.temperature,
+                                topP: m.topP,
+                                topK: m.topK
+                            };
+                        });
+
+                        // Sort: gemini-2.5 models first, then by name
+                        this.discoveredModels.sort((a, b) => {
+                            const a25 = a.id.includes('2.5') ? 0 : 1;
+                            const b25 = b.id.includes('2.5') ? 0 : 1;
+                            if (a25 !== b25) return a25 - b25;
+                            return a.displayName.localeCompare(b.displayName);
+                        });
+
+                        this.modelsLoaded = true;
+                        TimeRecordingUtils.log('info', `Discovered ${this.discoveredModels.length} available models`);
+
+                        // Validate current model exists in discovered list
+                        const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                        const modelExists = this.discoveredModels.some(m => m.id === currentModel);
+                        if (!modelExists && this.discoveredModels.length > 0) {
+                            // Find closest match or use first 2.5 model
+                            const preferred = this.discoveredModels.find(m => m.id.includes('2.5-flash')) ||
+                                            this.discoveredModels.find(m => m.id.includes('flash')) ||
+                                            this.discoveredModels[0];
+                            TimeRecordingConfig.ai.model = preferred.id;
+                            TimeRecordingUtils.log('info', `Model ${currentModel} not available, switched to ${preferred.id}`);
+                        }
+
+                        // Update UI dropdown
+                        this.updateModelDropdown();
+
+                    } catch (error) {
+                        TimeRecordingUtils.log('warning', 'Failed to discover models, using fallbacks: ' + error.message);
+                        // Build discovered models from fallback config
+                        const fallback = TimeRecordingConfig.ai?.fallbackModels || {};
+                        this.discoveredModels = Object.entries(fallback).map(([id, info]) => ({
+                            id: id,
+                            name: 'models/' + id,
+                            displayName: info.name || id,
+                            description: info.description || '',
+                            maxInputTokens: 1048576,
+                            maxOutputTokens: 8192,
+                            supportsThinking: id.includes('2.5'),
+                            supportsFunctionCalling: true
+                        }));
+                        this.modelsLoaded = true;
+                        this.updateModelDropdown();
+                    }
+                },
+
+                // Update the model dropdown in the UI
+                updateModelDropdown: function () {
+                    const dropdown = document.getElementById('trAIModelSelect');
+                    if (!dropdown) return;
+                    const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    dropdown.innerHTML = '';
+                    this.discoveredModels.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.displayName;
+                        opt.title = m.description;
+                        if (m.id === currentModel) opt.selected = true;
+                        dropdown.appendChild(opt);
+                    });
                 },
 
                 // Native Gemini function declarations for tool calling
@@ -402,11 +538,14 @@ if (appcontent) {
                 },
 
                 // Initialize AI module
-                init: function (apiKey) {
+                init: async function (apiKey) {
                     this.apiKey = apiKey;
                     if (!apiKey) {
                         TimeRecordingUtils.log('warning', 'AI module initialized without API key');
+                        return;
                     }
+                    // Discover available models on init
+                    await this.listModels();
                 },
 
                 // Initialize chat interface
@@ -542,14 +681,23 @@ if (appcontent) {
                         return;
                     }
 
-                    // Check for model switch command
+                    // Check for model switch command (text-based)
                     const lowerMsg = message.toLowerCase().trim();
-                    if (lowerMsg === 'switch to pro' || lowerMsg === 'use pro') {
-                        this.switchModel('gemini-2.5-pro');
-                        return;
-                    }
-                    if (lowerMsg === 'switch to flash' || lowerMsg === 'use flash') {
-                        this.switchModel('gemini-2.5-flash');
+                    const switchMatch = lowerMsg.match(/^(?:switch to|use)\s+(.+)$/);
+                    if (switchMatch) {
+                        const searchTerm = switchMatch[1].trim();
+                        const match = this.discoveredModels.find(m =>
+                            m.id.toLowerCase().includes(searchTerm) ||
+                            m.displayName.toLowerCase().includes(searchTerm)
+                        );
+                        if (match) {
+                            this.switchModel(match.id);
+                            return;
+                        }
+                        // Show available models if no match
+                        const available = this.discoveredModels.map(m => m.displayName).join(', ');
+                        this.addMessage('user', message);
+                        this.addMessage('model', '\u274C No model matching "' + searchTerm + '". Available: ' + available);
                         return;
                     }
 
@@ -1170,12 +1318,18 @@ Today: ${context.currentDate}`;
 
                 // Switch AI model
                 switchModel: function (modelKey) {
-                    const models = TimeRecordingConfig.ai?.availableModels || {};
-                    if (models[modelKey]) {
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
                         TimeRecordingConfig.ai.model = modelKey;
-                        this.addMessage('model', '\u{1F504} Switched to **' + models[modelKey].name + '** (' + models[modelKey].description + ')');
+                        const caps = [];
+                        if (discovered.supportsThinking) caps.push('thinking');
+                        if (discovered.supportsFunctionCalling) caps.push('function calling');
+                        const capsStr = caps.length > 0 ? ' | Supports: ' + caps.join(', ') : '';
+                        this.addMessage('model', '\u{1F504} Switched to **' + discovered.displayName + '**' + capsStr);
+                        this.updateModelDropdown();
                     } else {
-                        this.addMessage('model', '\u274C Unknown model: ' + modelKey + '. Available: ' + Object.keys(models).join(', '));
+                        const available = this.discoveredModels.map(m => m.displayName).join(', ');
+                        this.addMessage('model', '\u274C Unknown model: ' + modelKey + '. Available: ' + (available || 'none discovered'));
                     }
                 },
 

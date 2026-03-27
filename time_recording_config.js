@@ -31,12 +31,14 @@ window.TimeRecordingConfig = {
     
     // AI Configuration
     ai: {
-        // Model selection: 'gemini-2.5-flash' (fast, cheap, great for structured output)
-        //                   'gemini-2.5-pro' (deep reasoning, complex multi-step tasks)
+        // Model selection — populated dynamically via ListModels API
+        // Falls back to 'gemini-2.5-flash' if discovery fails
         model: 'gemini-2.5-flash',
-        availableModels: {
-            'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', description: 'Fast & cost-effective — best for daily use', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent' },
-            'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', description: 'Deep reasoning — for complex analysis', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent' }
+        apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        // Fallback models used only if ListModels API fails
+        fallbackModels: {
+            'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', description: 'Fast & cost-effective' },
+            'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', description: 'Deep reasoning' }
         },
         temperature: 0.15,            // Low temp for deterministic JSON output (was 0.4 — too random)
         maxRetries: 3,                // Auto-retry on API errors or invalid JSON
