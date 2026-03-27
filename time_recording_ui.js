@@ -53,6 +53,7 @@ window.TimeRecordingUI = {
                                     <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
                                     <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
                                     <button id="trAIApiKey" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Set/change API key">🔑</button>
+                                    <button id="trAIStatusBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Open AI status/debug window">🔬</button>
                                 </div>
                             </div>
                             <div style="padding: 6px 15px 0; display: flex; align-items: center; gap: 6px;">
@@ -89,6 +90,20 @@ window.TimeRecordingUI = {
                         <div id="trDayDetailsActions" style="padding: 15px; border-top: 1px solid #dee2e6; display: none;">
                             <button id="trEditDay" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; margin-bottom: 10px;">Edit Records</button>
                             <button id="trAddToSelection" style="width: 100%; padding: 10px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">Add to Selection</button>
+                        </div>
+                    </div>
+                    
+                    <!-- AI Status/Debug Popup -->
+                    <div id="trAIStatusPopup" style="background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); width: 380px; max-height: 70vh; display: none; flex-direction: column; position: fixed; bottom: 20px; left: 20px; z-index: 10001;">
+                        <div style="background: linear-gradient(135deg, #495057, #343a40); padding: 12px 15px; color: white; border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="margin: 0; font-size: 14px;">🔬 AI Status &amp; Debug</h3>
+                            <div style="display: flex; gap: 6px;">
+                                <button id="trAIStatusClear" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Clear log">🗑️</button>
+                                <button id="trAIStatusClose" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">✕</button>
+                            </div>
+                        </div>
+                        <div id="trAIStatusLog" style="flex: 1; overflow-y: auto; padding: 10px; max-height: 50vh; font-size: 11px; font-family: monospace; background: #fafafa;">
+                            <div style="color: #999; font-style: italic;">AI status log — function calls, thinking, and highlights will appear here.</div>
                         </div>
                     </div>
                     
@@ -968,6 +983,29 @@ window.TimeRecordingUI = {
             };
         }
 
+        // AI Status popup toggle
+        if (document.getElementById('trAIStatusBtn')) {
+            document.getElementById('trAIStatusBtn').onclick = () => {
+                const popup = document.getElementById('trAIStatusPopup');
+                if (popup) {
+                    popup.style.display = popup.style.display === 'flex' ? 'none' : 'flex';
+                }
+            };
+        }
+        if (document.getElementById('trAIStatusClose')) {
+            document.getElementById('trAIStatusClose').onclick = () => {
+                const popup = document.getElementById('trAIStatusPopup');
+                if (popup) popup.style.display = 'none';
+            };
+        }
+        if (document.getElementById('trAIStatusClear')) {
+            document.getElementById('trAIStatusClear').onclick = () => {
+                const log = document.getElementById('trAIStatusLog');
+                if (log) log.innerHTML = '<div style="color: #999; font-style: italic;">Log cleared.</div>';
+                if (window.TimeRecordingAI) TimeRecordingAI.statusLog = [];
+            };
+        }
+
         // Enter key in AI input
         if (document.getElementById('trAIInput')) {
             document.getElementById('trAIInput').onkeypress = (e) => {
@@ -1134,6 +1172,11 @@ window.TimeRecordingUI = {
         }
 
         TimeRecordingUtils.log('info', 'Calendar rendered successfully');
+
+        // Re-apply AI calendar overlays (highlights + persistent notes)
+        if (window.TimeRecordingAI) {
+            setTimeout(() => TimeRecordingAI.reapplyCalendarOverlays(), 50);
+        }
     },
 
     // Rest of the existing methods...

@@ -19,6 +19,9 @@ if (appcontent) {
                 aiNotes: [],
                 discoveredModels: [],
                 modelsLoaded: false,
+                calendarHighlights: {},  // {dateKey: {color, label}}
+                calendarNotes: {},       // {dateKey: {emoji, text}} — persisted in localStorage
+                statusLog: [],           // [{timestamp, type, message}] for status popup
 
                 // Get API base URL from config
                 getApiBaseUrl: function () {
@@ -285,6 +288,48 @@ if (appcontent) {
                                 },
                                 required: []
                             }
+                        },
+                        {
+                            name: "highlightDay",
+                            description: "Visually highlight a calendar day with a colored border and optional label. Use this to show the user which day you are currently working on or to draw attention to specific dates. The highlight is temporary and will be cleared on refresh.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date in YYYY-MM-DD format" },
+                                    color: { type: "string", description: "CSS color for the highlight border (e.g. '#667eea', '#28a745', '#ff6b6b'). Default: '#667eea' (purple)" },
+                                    label: { type: "string", description: "Short label to show on the day (e.g. '🔍 checking', '✅ done', '📝 editing')" }
+                                },
+                                required: ["date"]
+                            }
+                        },
+                        {
+                            name: "clearHighlights",
+                            description: "Remove all AI visual highlights from the calendar. Call this when you are done working on a set of days.",
+                            parameters: { type: "object", properties: {}, required: [] }
+                        },
+                        {
+                            name: "addCalendarNote",
+                            description: "Add a persistent client-side note to a calendar day, displayed like a holiday. Notes are stored locally and survive page refreshes. Use for reminders, markers, or custom annotations the user wants to see on the calendar.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date in YYYY-MM-DD format" },
+                                    emoji: { type: "string", description: "Emoji to display (e.g. '📌', '⭐', '🎯', '🔔'). Default: '📌'" },
+                                    text: { type: "string", description: "Short text to display on the calendar day (max ~30 chars)" }
+                                },
+                                required: ["date", "text"]
+                            }
+                        },
+                        {
+                            name: "removeCalendarNote",
+                            description: "Remove a persistent client-side note from a calendar day.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date in YYYY-MM-DD format" }
+                                },
+                                required: ["date"]
+                            }
                         }
                     ];
                 },
@@ -337,6 +382,14 @@ if (appcontent) {
                             return await this.handleGetRecordsForDateRange(args);
                         case 'searchRecords':
                             return await this.handleSearchRecords(args);
+                        case 'highlightDay':
+                            return this.handleHighlightDay(args);
+                        case 'clearHighlights':
+                            return this.handleClearHighlights();
+                        case 'addCalendarNote':
+                            return this.handleAddCalendarNote(args);
+                        case 'removeCalendarNote':
+                            return this.handleRemoveCalendarNote(args);
                         default:
                             return { error: 'Unknown function: ' + name };
                     }
@@ -539,8 +592,158 @@ if (appcontent) {
                     }
                 },
 
+                // ─── Calendar Visual Overlay Handlers ─────────────────────────
+
+                handleHighlightDay: function (args) {
+                    const dateKey = args.date.replace(/-/g, '');
+                    const color = args.color || '#667eea';
+                    const label = args.label || '';
+                    this.calendarHighlights[dateKey] = { color, label };
+                    this.applyHighlight(dateKey, color, label);
+                    this.logStatus('highlight', 'Highlighted ' + args.date + (label ? ' — ' + label : ''));
+                    return { status: 'ok', date: args.date, color, label };
+                },
+
+                handleClearHighlights: function () {
+                    const count = Object.keys(this.calendarHighlights).length;
+                    for (const dateKey of Object.keys(this.calendarHighlights)) {
+                        this.removeHighlight(dateKey);
+                    }
+                    this.calendarHighlights = {};
+                    this.logStatus('highlight', 'Cleared ' + count + ' highlights');
+                    return { status: 'ok', cleared: count };
+                },
+
+                handleAddCalendarNote: function (args) {
+                    const dateKey = args.date.replace(/-/g, '');
+                    const emoji = args.emoji || '\u{1F4CC}';
+                    const text = (args.text || '').substring(0, 40);
+                    this.calendarNotes[dateKey] = { emoji, text };
+                    this.saveCalendarNotes();
+                    this.applyCalendarNote(dateKey, emoji, text);
+                    this.logStatus('note', 'Added note to ' + args.date + ': ' + emoji + ' ' + text);
+                    return { status: 'ok', date: args.date, emoji, text };
+                },
+
+                handleRemoveCalendarNote: function (args) {
+                    const dateKey = args.date.replace(/-/g, '');
+                    if (this.calendarNotes[dateKey]) {
+                        delete this.calendarNotes[dateKey];
+                        this.saveCalendarNotes();
+                        this.removeCalendarNoteElement(dateKey);
+                        this.logStatus('note', 'Removed note from ' + args.date);
+                        return { status: 'ok', removed: args.date };
+                    }
+                    return { status: 'ok', message: 'No note found on ' + args.date };
+                },
+
+                // Apply a visual highlight to a calendar day cell
+                applyHighlight: function (dateKey, color, label) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    cell.style.boxShadow = 'inset 0 0 0 3px ' + color;
+                    cell.style.transition = 'box-shadow 0.3s ease';
+                    // Add or update label overlay
+                    let overlay = cell.querySelector('.tr-ai-highlight-label');
+                    if (label) {
+                        if (!overlay) {
+                            overlay = document.createElement('div');
+                            overlay.className = 'tr-ai-highlight-label';
+                            overlay.style.cssText = 'position:absolute;top:2px;right:2px;font-size:10px;background:' + color + ';color:white;padding:1px 4px;border-radius:3px;z-index:5;white-space:nowrap;pointer-events:none;';
+                            cell.style.position = 'relative';
+                            cell.appendChild(overlay);
+                        }
+                        overlay.textContent = label;
+                        overlay.style.background = color;
+                    } else if (overlay) {
+                        overlay.remove();
+                    }
+                },
+
+                // Remove a highlight from a calendar day cell
+                removeHighlight: function (dateKey) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    cell.style.boxShadow = '';
+                    const overlay = cell.querySelector('.tr-ai-highlight-label');
+                    if (overlay) overlay.remove();
+                },
+
+                // Apply a persistent calendar note to a day cell
+                applyCalendarNote: function (dateKey, emoji, text) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    // Remove existing note if present
+                    this.removeCalendarNoteElement(dateKey);
+                    const noteEl = document.createElement('div');
+                    noteEl.className = 'tr-ai-calendar-note';
+                    noteEl.style.cssText = 'font-size:10px;color:#764ba2;text-align:center;margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+                    noteEl.textContent = emoji + ' ' + text;
+                    cell.appendChild(noteEl);
+                },
+
+                // Remove a calendar note element from a day cell
+                removeCalendarNoteElement: function (dateKey) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    const existing = cell.querySelector('.tr-ai-calendar-note');
+                    if (existing) existing.remove();
+                },
+
+                // Save calendar notes to localStorage
+                saveCalendarNotes: function () {
+                    TimeRecordingUtils.storage.save('ai_calendar_notes', JSON.stringify(this.calendarNotes));
+                },
+
+                // Load calendar notes from localStorage
+                loadCalendarNotes: function () {
+                    try {
+                        const raw = TimeRecordingUtils.storage.load('ai_calendar_notes', '{}');
+                        this.calendarNotes = JSON.parse(raw);
+                    } catch (e) {
+                        this.calendarNotes = {};
+                    }
+                },
+
+                // Re-apply all highlights and notes after calendar render
+                reapplyCalendarOverlays: function () {
+                    for (const [dateKey, h] of Object.entries(this.calendarHighlights)) {
+                        this.applyHighlight(dateKey, h.color, h.label);
+                    }
+                    for (const [dateKey, n] of Object.entries(this.calendarNotes)) {
+                        this.applyCalendarNote(dateKey, n.emoji, n.text);
+                    }
+                },
+
+                // ─── Status Log for Debug Popup ─────────────────────────
+
+                logStatus: function (type, message) {
+                    const entry = { timestamp: new Date().toISOString(), type, message };
+                    this.statusLog.push(entry);
+                    if (this.statusLog.length > 200) this.statusLog.shift();
+                    this.updateStatusPopup(entry);
+                },
+
+                // Update the status popup window if it's open
+                updateStatusPopup: function (entry) {
+                    const container = document.getElementById('trAIStatusLog');
+                    if (!container) return;
+                    const line = document.createElement('div');
+                    line.style.cssText = 'padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:11px;font-family:monospace;';
+                    const time = entry.timestamp.substring(11, 19);
+                    const typeColors = { highlight: '#667eea', note: '#764ba2', function: '#28a745', thinking: '#ffc107', error: '#dc3545', info: '#6c757d' };
+                    const color = typeColors[entry.type] || '#333';
+                    line.innerHTML = '<span style="color:#999;">' + time + '</span> <span style="color:' + color + ';font-weight:bold;">[' + entry.type + ']</span> ' + entry.message.replace(/</g, '&lt;');
+                    container.appendChild(line);
+                    container.scrollTop = container.scrollHeight;
+                },
+
+                // ─── End Calendar Visual / Status Methods ─────────────────
+
                 // Initialize AI module — load API key from storage
                 init: async function (apiKey) {
+                    // Load persisted calendar notes
+                    this.loadCalendarNotes();
                     // If key passed directly, save it; otherwise load from storage
                     if (apiKey) {
                         this.apiKey = apiKey;
@@ -778,6 +981,7 @@ if (appcontent) {
 
                     const context = await this.prepareEnhancedContext();
                     this.showTypingIndicator();
+                    this.logStatus('thinking', 'Processing: ' + message.substring(0, 80) + (message.length > 80 ? '...' : ''));
 
                     try {
                         const maxRetries = TimeRecordingConfig.ai?.maxRetries || 3;
@@ -789,6 +993,7 @@ if (appcontent) {
                                 const result = await this.callGeminiWithFunctions(message, context, attempt > 1 ? lastError : null);
 
                                 this.hideTypingIndicator();
+                                this.logStatus('info', 'Response received');
 
                                 // If the result was handled by function calling (askUser), don't process further
                                 if (result === '__ASKED_USER__') return;
@@ -809,6 +1014,7 @@ if (appcontent) {
                         }
                     } catch (error) {
                         this.hideTypingIndicator();
+                        this.logStatus('error', 'Failed: ' + error.message);
                         TimeRecordingUtils.log('error', 'AI request failed after retries', error);
                         this.addMessage('model', '\u274C Sorry, I encountered an error after multiple attempts. Error: ' + error.message + '\n\nPlease try again or rephrase your request.');
                     }
@@ -914,6 +1120,14 @@ You can:
 5. **Query** data \u2014 \`getMissingDays\`, \`getMonthSummary\`, \`getRecordsForDate\`, \`getFavorites\`, \`getProjectDetails\`
 6. **Search** \u2014 \`getRecordsForDateRange\` for multi-day lookups, \`searchRecords\` for keyword/project search
 7. **Clarify** \u2014 \`askUser\` when uncertain
+8. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
+9. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
+
+# VISUAL FEEDBACK STRATEGY
+- When working on multiple days, call \`highlightDay\` on each day you're processing so the user can see your progress
+- Use \`clearHighlights\` when you're done with a batch
+- Use \`addCalendarNote\` when the user asks for reminders, markers, or annotations on specific days
+- Calendar notes persist across page refreshes; highlights are temporary
 
 # FUNCTION CALLING STRATEGY
 - Call \`makeNotes\` first to plan complex requests
@@ -1137,6 +1351,7 @@ Today: ${context.currentDate}`;
                     const name = functionCall.name;
                     const args = functionCall.args || {};
                     TimeRecordingUtils.log('info', 'AI called function: ' + name, args);
+                    this.logStatus('function', name + '(' + Object.keys(args).join(', ') + ')');
 
                     const result = await this.executeFunctionByName(name, args);
 
