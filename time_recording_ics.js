@@ -499,15 +499,6 @@ Please generate time entries for all these meetings.`;
     }
 };
 
-// Add ICS import button to the UI
-// Add this to the header buttons in getHTML():
-`<button id="trImportICS" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;" title="Import ICS Calendar">📥</button>`
-
-// Add event handler in attachEventHandlers():
-document.getElementById('trImportICS').onclick = () => {
-    TimeRecordingICS.showImportDialog();
-};
-
 // Add pulse animation to styles
 const style = document.createElement('style');
 style.textContent += `
@@ -526,4 +517,3 @@ style.textContent += `
 document.head.appendChild(style);    }).toString() + ')();';
     document.head.appendChild(el);
 }
-ssssss

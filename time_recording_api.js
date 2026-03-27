@@ -89,7 +89,7 @@ window.TimeRecordingAPI = {
                         const csJsonIndex = csPart.indexOf('{');
                         if (csJsonIndex !== -1) {
                             const csJsonString = csPart.substring(csJsonIndex);
-                            try { return JSON.parse(csJsonString); } catch(e) { /* ignore parse error */ }
+                            try { return JSON.parse(csJsonString); } catch(e) { console.warn('Failed to parse changeset JSON:', e.message); }
                         }
                         return null;
                     }).filter(p => p);

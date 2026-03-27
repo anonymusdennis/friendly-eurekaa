@@ -323,21 +323,33 @@ window.TimeRecordingEdit = {
             if (results.length === 0) {
                 resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;">No results found</div>';
             } else {
+                const escapeHtml = (str) => (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                 let html = '<ul style="list-style: none; padding: 0; margin: 0;">';
-                results.forEach(result => {
+                results.forEach((result, index) => {
+                    const projId = escapeHtml(result.AccProjId);
+                    const projDesc = escapeHtml(result.AccProjDesc);
+                    const taskId = escapeHtml(result.AccTaskPspId);
+                    const taskDesc = escapeHtml(result.AccTaskPspDesc);
                     html += `
                         <li style="padding: 10px; border: 1px solid #dee2e6; border-radius: 4px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s;"
-                            onclick="window.TimeRecordingEdit.selectPSP('${result.AccProjId}', '${result.AccProjDesc}', '${result.AccTaskPspId}', '${result.AccTaskPspDesc}')"
+                            data-psp-index="${index}"
                             onmouseover="this.style.background='#f0f4ff'" 
                             onmouseout="this.style.background='white'">
-                            <div style="font-weight: bold; margin-bottom: 5px;">${result.AccProjId} - ${result.AccTaskPspId}</div>
-                            <div style="font-size: 12px; color: #666;">${result.AccProjDesc}</div>
-                            <div style="font-size: 12px; color: #666;">${result.AccTaskPspDesc}</div>
+                            <div style="font-weight: bold; margin-bottom: 5px;">${projId} - ${taskId}</div>
+                            <div style="font-size: 12px; color: #666;">${projDesc}</div>
+                            <div style="font-size: 12px; color: #666;">${taskDesc}</div>
                         </li>
                     `;
                 });
                 html += '</ul>';
                 resultsDiv.innerHTML = html;
+                resultsDiv.querySelectorAll('li[data-psp-index]').forEach(li => {
+                    const idx = parseInt(li.dataset.pspIndex);
+                    const r = results[idx];
+                    li.addEventListener('click', () => {
+                        window.TimeRecordingEdit.selectPSP(r.AccProjId, r.AccProjDesc, r.AccTaskPspId, r.AccTaskPspDesc);
+                    });
+                });
             }
             
         } catch (error) {
