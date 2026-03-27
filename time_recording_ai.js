@@ -125,7 +125,7 @@ if (appcontent) {
                         },
                         {
                             name: "getRecordsForDateRange",
-                            description: "Get all time records for a range of dates at once. Useful for reviewing a week or multi-day period. Returns records grouped by date.",
+                            description: "Get all time records for a range of dates at once. Useful for reviewing a week or multi-day period. Returns records grouped by date. Limited to 14 days max.",
                             parameters: {
                                 type: "object",
                                 properties: {
@@ -137,7 +137,7 @@ if (appcontent) {
                         },
                         {
                             name: "searchRecords",
-                            description: "Search time records across the current month by keyword, project ID, or account type. Returns matching records from all days that have time entries.",
+                            description: "Search time records across the current month by keyword, project ID, or account type. Searches up to 10 days with records. Returns matching records.",
                             parameters: {
                                 type: "object",
                                 properties: {
@@ -672,7 +672,7 @@ if (appcontent) {
                         const projectLines = h.topProjects.slice(0, 12).map((p, i) => {
                             const desc = p.projectDesc || p.projectId;
                             const sample = p.sampleDescriptions.length > 0 ? ` \u2014 e.g. "${p.sampleDescriptions[0]}"` : '';
-                            return `${i+1}. ${desc} (${p.taskId}) \u2014 ${p.totalHours.toFixed(0)}h / ${p.count} entries / AccountInd:${p.accountInd}${sample}`;
+                            return `${i + 1}. ${desc} (${p.taskId}) \u2014 ${p.totalHours.toFixed(0)}h / ${p.count} entries / AccountInd:${p.accountInd}${sample}`;
                         }).join('\n');
                         historyBlock = `\n\n## HISTORICAL WORK PATTERNS (${h.totalRecords} records, ${h.totalHours}h, ${h.periodStart}\u2013${h.periodEnd})\n${projectLines}`;
                     }
