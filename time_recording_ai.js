@@ -537,10 +537,16 @@ if (appcontent) {
                     }
                 },
 
-                // Initialize AI module
+                // Initialize AI module — load API key from storage
                 init: async function (apiKey) {
-                    this.apiKey = apiKey;
-                    if (!apiKey) {
+                    // If key passed directly, save it; otherwise load from storage
+                    if (apiKey) {
+                        this.apiKey = apiKey;
+                        this.saveApiKey(apiKey);
+                    } else {
+                        this.apiKey = this.loadApiKey();
+                    }
+                    if (!this.apiKey) {
                         TimeRecordingUtils.log('warning', 'AI module initialized without API key');
                         return;
                     }
@@ -548,10 +554,46 @@ if (appcontent) {
                     await this.listModels();
                 },
 
+                // Save API key to localStorage
+                saveApiKey: function (key) {
+                    TimeRecordingUtils.storage.save('ai_api_key', key);
+                },
+
+                // Load API key from localStorage
+                loadApiKey: function () {
+                    return TimeRecordingUtils.storage.load('ai_api_key', null);
+                },
+
+                // Remove API key from localStorage
+                removeApiKey: function () {
+                    TimeRecordingUtils.storage.remove('ai_api_key');
+                    this.apiKey = null;
+                    this.discoveredModels = [];
+                    this.modelsLoaded = false;
+                },
+
+                // Prompt user for API key and store it
+                promptForApiKey: async function () {
+                    const key = prompt(
+                        'Enter your Google Gemini API key:\n\n' +
+                        'Get one free at: https://aistudio.google.com/apikey\n\n' +
+                        'The key is stored locally in your browser and never sent anywhere except the Gemini API.'
+                    );
+                    if (key && key.trim()) {
+                        this.apiKey = key.trim();
+                        this.saveApiKey(this.apiKey);
+                        this.addMessage('model', '\u{1F511} API key saved! Discovering available models...');
+                        await this.listModels();
+                        this.addMessage('model', '\u2705 Ready! Found **' + this.discoveredModels.length + '** models. Using **' + this.getModelName() + '**.');
+                    } else {
+                        this.addMessage('model', '\u274C No API key provided. AI features are disabled.\n\nClick \u{1F511} to set your API key.');
+                    }
+                },
+
                 // Initialize chat interface
                 initializeChat: function () {
                     if (!this.apiKey) {
-                        this.addMessage('model', 'AI Assistant is not configured. Please provide an API key using TimeRecordingAI.init("your-api-key")');
+                        this.addMessage('model', '\u{1F511} **API key not configured.** Click the \u{1F511} button above to enter your Gemini API key.\n\nGet a free key at: https://aistudio.google.com/apikey');
                         return;
                     }
 
@@ -568,7 +610,8 @@ if (appcontent) {
                             '\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard',
                             '\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day',
                             '\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong',
-                            '\u{1F527} **Switch model** \u2014 Type "switch to pro" or "switch to flash"',
+                            '\u{1F527} **Switch model** \u2014 Use the dropdown or type "switch to pro"',
+                            '\u{1F511} **API key** \u2014 Click \u{1F511} to manage your API key (stored locally)',
                             '\nJust describe what you worked on and I\'ll suggest accurate time entries!'
                         ].join('\n'));
 
@@ -1010,6 +1053,21 @@ ${fence}
 Today: ${context.currentDate}`;
                 },
 
+                // Build generationConfig — conditionally includes thinkingConfig based on model capabilities
+                buildGenerationConfig: function () {
+                    const capabilities = this.getModelCapabilities();
+                    const config = {
+                        temperature: TimeRecordingConfig.ai?.temperature || 0.15,
+                        topK: 40,
+                        topP: 0.95,
+                        maxOutputTokens: Math.min(capabilities.maxOutputTokens || 8192, 1024 * 8)
+                    };
+                    if (capabilities.supportsThinking) {
+                        config.thinkingConfig = { thinkingBudget: 1024 * 8 };
+                    }
+                    return config;
+                },
+
                 // Main API call with native function calling support
                 callGeminiWithFunctions: async function (message, context, previousError) {
                     const systemPrompt = this.buildSystemPrompt(context);
@@ -1026,13 +1084,7 @@ Today: ${context.currentDate}`;
                             ...context.chatHistory,
                             { role: "user", parts: userParts }
                         ],
-                        generationConfig: {
-                            temperature: TimeRecordingConfig.ai?.temperature || 0.15,
-                            topK: 40,
-                            topP: 0.95,
-                            maxOutputTokens: 1024 * 8,
-                            thinkingConfig: { thinkingBudget: 1024 * 8 }
-                        },
+                        generationConfig: this.buildGenerationConfig(),
                         safetySettings: [
                             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -1109,12 +1161,7 @@ Today: ${context.currentDate}`;
                                 }]
                             }
                         ],
-                        generationConfig: {
-                            temperature: TimeRecordingConfig.ai?.temperature || 0.15,
-                            topK: 40, topP: 0.95,
-                            maxOutputTokens: 1024 * 8,
-                            thinkingConfig: { thinkingBudget: 1024 * 8 }
-                        },
+                        generationConfig: this.buildGenerationConfig(),
                         safetySettings: [
                             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },

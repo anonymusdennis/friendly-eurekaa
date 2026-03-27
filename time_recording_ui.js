@@ -52,8 +52,14 @@ window.TimeRecordingUI = {
                                     <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
                                     <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
                                     <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
-                                    <button id="trAISwitchModel" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Switch AI model (Flash/Pro)">⚡</button>
+                                    <button id="trAIApiKey" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Set/change API key">🔑</button>
                                 </div>
+                            </div>
+                            <div style="padding: 6px 15px 0; display: flex; align-items: center; gap: 6px;">
+                                <label style="color: rgba(255,255,255,0.8); font-size: 11px; white-space: nowrap;">Model:</label>
+                                <select id="trAIModelSelect" style="flex: 1; background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 3px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; max-width: 260px;">
+                                    <option value="">Loading models...</option>
+                                </select>
                             </div>
                         </div>
                         <input type="file" id="trAIFileInput" style="display: none;" accept=".txt,.csv,.json,.md,.log,.xml">
@@ -944,13 +950,20 @@ window.TimeRecordingUI = {
             };
         }
 
-        // Switch Model button
-        if (document.getElementById('trAISwitchModel')) {
-            document.getElementById('trAISwitchModel').onclick = () => {
+        // Model dropdown
+        if (document.getElementById('trAIModelSelect')) {
+            document.getElementById('trAIModelSelect').onchange = (e) => {
+                if (window.TimeRecordingAI && e.target.value) {
+                    TimeRecordingAI.switchModel(e.target.value);
+                }
+            };
+        }
+
+        // API Key button
+        if (document.getElementById('trAIApiKey')) {
+            document.getElementById('trAIApiKey').onclick = () => {
                 if (window.TimeRecordingAI) {
-                    const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
-                    const newModel = currentModel === 'gemini-2.5-flash' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-                    TimeRecordingAI.switchModel(newModel);
+                    TimeRecordingAI.promptForApiKey();
                 }
             };
         }

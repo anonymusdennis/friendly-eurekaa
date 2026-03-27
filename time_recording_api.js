@@ -534,6 +534,7 @@ createTimeRecord: async function(recordData) {
             // Fetch in monthly batches to avoid overwhelming the server
             const allRecords = [];
             const current = new Date(startDate);
+            let batchCount = 0;
             
             while (current < endDate) {
                 const batchEnd = new Date(current);
@@ -542,15 +543,24 @@ createTimeRecord: async function(recordData) {
                 
                 const batchStartStr = TimeRecordingUtils.formatDate(current);
                 const batchEndStr = TimeRecordingUtils.formatDate(batchEnd);
+                batchCount++;
                 
                 const requests = [
                     `TimeRecordS4Set?sap-client=${this.SAP_CLIENT}&$filter=Pernr%20eq%20%27${config.userPernr}%27%20and%20RecordDate%20ge%20%27${batchStartStr}%27%20and%20RecordDate%20le%20%27${batchEndStr}%27`
                 ];
                 
-                const response = await this.executeBatchRequest(requests);
-                
-                if (response && response[0]?.d?.results) {
-                    allRecords.push(...response[0].d.results);
+                try {
+                    const response = await this.executeBatchRequest(requests);
+                    
+                    if (response && response[0]?.d?.results) {
+                        const batchRecords = response[0].d.results;
+                        allRecords.push(...batchRecords);
+                        TimeRecordingUtils.log('info', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}): ${batchRecords.length} records`);
+                    } else {
+                        TimeRecordingUtils.log('warning', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}): No results in response`, response);
+                    }
+                } catch (batchError) {
+                    TimeRecordingUtils.log('warning', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}) failed: ${batchError.message}`);
                 }
                 
                 current.setMonth(current.getMonth() + 1);
@@ -559,7 +569,7 @@ createTimeRecord: async function(recordData) {
                 await new Promise(resolve => setTimeout(resolve, 300));
             }
             
-            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months`);
+            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months (${batchCount} batches)`);
             return allRecords;
             
         } catch (error) {

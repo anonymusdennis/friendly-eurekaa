@@ -10,19 +10,155 @@
                 pendingFunctionCalls: [],
                 pendingDeletion: null,
                 aiNotes: [],
+                discoveredModels: [],
+                modelsLoaded: false,
 
-                // Get current AI model endpoint from config
+                // Get API base URL from config
+                getApiBaseUrl: function () {
+                    return TimeRecordingConfig.ai?.apiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
+                },
+
+                // Get current AI model endpoint — built dynamically from model name
                 getEndpoint: function () {
-                    const model = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
-                    const models = TimeRecordingConfig.ai?.availableModels || {};
-                    return models[model]?.endpoint || 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent';
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        return `${this.getApiBaseUrl()}/${discovered.name}:generateContent`;
+                    }
+                    // Fallback: construct from model key
+                    return `${this.getApiBaseUrl()}/models/${modelKey}:generateContent`;
                 },
 
                 // Get current model name for display
                 getModelName: function () {
-                    const model = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
-                    const models = TimeRecordingConfig.ai?.availableModels || {};
-                    return models[model]?.name || 'Gemini 2.5 Flash';
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) return discovered.displayName;
+                    const fallback = TimeRecordingConfig.ai?.fallbackModels || {};
+                    return fallback[modelKey]?.name || modelKey;
+                },
+
+                // Get current model capabilities
+                getModelCapabilities: function () {
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        return {
+                            supportsThinking: discovered.supportsThinking,
+                            supportsFunctionCalling: discovered.supportsFunctionCalling,
+                            maxOutputTokens: discovered.maxOutputTokens,
+                            maxInputTokens: discovered.maxInputTokens
+                        };
+                    }
+                    // Default capabilities for unknown models
+                    return {
+                        supportsThinking: false,
+                        supportsFunctionCalling: true,
+                        maxOutputTokens: 8192,
+                        maxInputTokens: 1048576
+                    };
+                },
+
+                // Discover available models via Gemini ListModels API
+                listModels: async function () {
+                    if (!this.apiKey) return;
+                    try {
+                        const response = await fetch(
+                            `${this.getApiBaseUrl()}/models?key=${this.apiKey}`
+                        );
+                        if (!response.ok) {
+                            throw new Error('ListModels failed: ' + response.status);
+                        }
+                        const data = await response.json();
+                        if (!data.models || !Array.isArray(data.models)) {
+                            throw new Error('Invalid ListModels response');
+                        }
+
+                        // Filter for models that support generateContent
+                        const generateModels = data.models.filter(m =>
+                            m.supportedGenerationMethods &&
+                            m.supportedGenerationMethods.includes('generateContent')
+                        );
+
+                        // Map to our internal format
+                        this.discoveredModels = generateModels.map(m => {
+                            const id = m.name.replace('models/', '');
+                            const isThinking = id.includes('thinking') ||
+                                (m.description && m.description.toLowerCase().includes('thinking'));
+                            return {
+                                id: id,
+                                name: m.name,
+                                displayName: m.displayName || id,
+                                description: m.description || '',
+                                maxInputTokens: m.inputTokenLimit || 0,
+                                maxOutputTokens: m.outputTokenLimit || 0,
+                                supportsThinking: isThinking || id.includes('2.5'),
+                                supportsFunctionCalling: true,
+                                temperature: m.temperature,
+                                topP: m.topP,
+                                topK: m.topK
+                            };
+                        });
+
+                        // Sort: gemini-2.5 models first, then by name
+                        this.discoveredModels.sort((a, b) => {
+                            const a25 = a.id.includes('2.5') ? 0 : 1;
+                            const b25 = b.id.includes('2.5') ? 0 : 1;
+                            if (a25 !== b25) return a25 - b25;
+                            return a.displayName.localeCompare(b.displayName);
+                        });
+
+                        this.modelsLoaded = true;
+                        TimeRecordingUtils.log('info', `Discovered ${this.discoveredModels.length} available models`);
+
+                        // Validate current model exists in discovered list
+                        const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                        const modelExists = this.discoveredModels.some(m => m.id === currentModel);
+                        if (!modelExists && this.discoveredModels.length > 0) {
+                            // Find closest match or use first 2.5 model
+                            const preferred = this.discoveredModels.find(m => m.id.includes('2.5-flash')) ||
+                                            this.discoveredModels.find(m => m.id.includes('flash')) ||
+                                            this.discoveredModels[0];
+                            TimeRecordingConfig.ai.model = preferred.id;
+                            TimeRecordingUtils.log('info', `Model ${currentModel} not available, switched to ${preferred.id}`);
+                        }
+
+                        // Update UI dropdown
+                        this.updateModelDropdown();
+
+                    } catch (error) {
+                        TimeRecordingUtils.log('warning', 'Failed to discover models, using fallbacks: ' + error.message);
+                        // Build discovered models from fallback config
+                        const fallback = TimeRecordingConfig.ai?.fallbackModels || {};
+                        this.discoveredModels = Object.entries(fallback).map(([id, info]) => ({
+                            id: id,
+                            name: 'models/' + id,
+                            displayName: info.name || id,
+                            description: info.description || '',
+                            maxInputTokens: 1048576,
+                            maxOutputTokens: 8192,
+                            supportsThinking: id.includes('2.5'),
+                            supportsFunctionCalling: true
+                        }));
+                        this.modelsLoaded = true;
+                        this.updateModelDropdown();
+                    }
+                },
+
+                // Update the model dropdown in the UI
+                updateModelDropdown: function () {
+                    const dropdown = document.getElementById('trAIModelSelect');
+                    if (!dropdown) return;
+                    const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    dropdown.innerHTML = '';
+                    this.discoveredModels.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.displayName;
+                        opt.title = m.description;
+                        if (m.id === currentModel) opt.selected = true;
+                        dropdown.appendChild(opt);
+                    });
                 },
 
                 // Native Gemini function declarations for tool calling
@@ -394,18 +530,63 @@
                     }
                 },
 
-                // Initialize AI module
-                init: function (apiKey) {
-                    this.apiKey = apiKey;
-                    if (!apiKey) {
+                // Initialize AI module — load API key from storage
+                init: async function (apiKey) {
+                    // If key passed directly, save it; otherwise load from storage
+                    if (apiKey) {
+                        this.apiKey = apiKey;
+                        this.saveApiKey(apiKey);
+                    } else {
+                        this.apiKey = this.loadApiKey();
+                    }
+                    if (!this.apiKey) {
                         TimeRecordingUtils.log('warning', 'AI module initialized without API key');
+                        return;
+                    }
+                    // Discover available models on init
+                    await this.listModels();
+                },
+
+                // Save API key to localStorage
+                saveApiKey: function (key) {
+                    TimeRecordingUtils.storage.save('ai_api_key', key);
+                },
+
+                // Load API key from localStorage
+                loadApiKey: function () {
+                    return TimeRecordingUtils.storage.load('ai_api_key', null);
+                },
+
+                // Remove API key from localStorage
+                removeApiKey: function () {
+                    TimeRecordingUtils.storage.remove('ai_api_key');
+                    this.apiKey = null;
+                    this.discoveredModels = [];
+                    this.modelsLoaded = false;
+                },
+
+                // Prompt user for API key and store it
+                promptForApiKey: async function () {
+                    const key = prompt(
+                        'Enter your Google Gemini API key:\n\n' +
+                        'Get one free at: https://aistudio.google.com/apikey\n\n' +
+                        'The key is stored locally in your browser and never sent anywhere except the Gemini API.'
+                    );
+                    if (key && key.trim()) {
+                        this.apiKey = key.trim();
+                        this.saveApiKey(this.apiKey);
+                        this.addMessage('model', '\u{1F511} API key saved! Discovering available models...');
+                        await this.listModels();
+                        this.addMessage('model', '\u2705 Ready! Found **' + this.discoveredModels.length + '** models. Using **' + this.getModelName() + '**.');
+                    } else {
+                        this.addMessage('model', '\u274C No API key provided. AI features are disabled.\n\nClick \u{1F511} to set your API key.');
                     }
                 },
 
                 // Initialize chat interface
                 initializeChat: function () {
                     if (!this.apiKey) {
-                        this.addMessage('model', 'AI Assistant is not configured. Please provide an API key using TimeRecordingAI.init("your-api-key")');
+                        this.addMessage('model', '\u{1F511} **API key not configured.** Click the \u{1F511} button above to enter your Gemini API key.\n\nGet a free key at: https://aistudio.google.com/apikey');
                         return;
                     }
 
@@ -422,7 +603,8 @@
                             '\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard',
                             '\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day',
                             '\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong',
-                            '\u{1F527} **Switch model** \u2014 Type "switch to pro" or "switch to flash"',
+                            '\u{1F527} **Switch model** \u2014 Use the dropdown or type "switch to pro"',
+                            '\u{1F511} **API key** \u2014 Click \u{1F511} to manage your API key (stored locally)',
                             '\nJust describe what you worked on and I\'ll suggest accurate time entries!'
                         ].join('\n'));
 
@@ -535,14 +717,23 @@
                         return;
                     }
 
-                    // Check for model switch command
+                    // Check for model switch command (text-based)
                     const lowerMsg = message.toLowerCase().trim();
-                    if (lowerMsg === 'switch to pro' || lowerMsg === 'use pro') {
-                        this.switchModel('gemini-2.5-pro');
-                        return;
-                    }
-                    if (lowerMsg === 'switch to flash' || lowerMsg === 'use flash') {
-                        this.switchModel('gemini-2.5-flash');
+                    const switchMatch = lowerMsg.match(/^(?:switch to|use)\s+(.+)$/);
+                    if (switchMatch) {
+                        const searchTerm = switchMatch[1].trim();
+                        const match = this.discoveredModels.find(m =>
+                            m.id.toLowerCase().includes(searchTerm) ||
+                            m.displayName.toLowerCase().includes(searchTerm)
+                        );
+                        if (match) {
+                            this.switchModel(match.id);
+                            return;
+                        }
+                        // Show available models if no match
+                        const available = this.discoveredModels.map(m => m.displayName).join(', ');
+                        this.addMessage('user', message);
+                        this.addMessage('model', '\u274C No model matching "' + searchTerm + '". Available: ' + available);
                         return;
                     }
 
@@ -855,6 +1046,21 @@ ${fence}
 Today: ${context.currentDate}`;
                 },
 
+                // Build generationConfig — conditionally includes thinkingConfig based on model capabilities
+                buildGenerationConfig: function () {
+                    const capabilities = this.getModelCapabilities();
+                    const config = {
+                        temperature: TimeRecordingConfig.ai?.temperature || 0.15,
+                        topK: 40,
+                        topP: 0.95,
+                        maxOutputTokens: Math.min(capabilities.maxOutputTokens || 8192, 1024 * 8)
+                    };
+                    if (capabilities.supportsThinking) {
+                        config.thinkingConfig = { thinkingBudget: 1024 * 8 };
+                    }
+                    return config;
+                },
+
                 // Main API call with native function calling support
                 callGeminiWithFunctions: async function (message, context, previousError) {
                     const systemPrompt = this.buildSystemPrompt(context);
@@ -871,13 +1077,7 @@ Today: ${context.currentDate}`;
                             ...context.chatHistory,
                             { role: "user", parts: userParts }
                         ],
-                        generationConfig: {
-                            temperature: TimeRecordingConfig.ai?.temperature || 0.15,
-                            topK: 40,
-                            topP: 0.95,
-                            maxOutputTokens: 1024 * 8,
-                            thinkingConfig: { thinkingBudget: 1024 * 8 }
-                        },
+                        generationConfig: this.buildGenerationConfig(),
                         safetySettings: [
                             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -954,12 +1154,7 @@ Today: ${context.currentDate}`;
                                 }]
                             }
                         ],
-                        generationConfig: {
-                            temperature: TimeRecordingConfig.ai?.temperature || 0.15,
-                            topK: 40, topP: 0.95,
-                            maxOutputTokens: 1024 * 8,
-                            thinkingConfig: { thinkingBudget: 1024 * 8 }
-                        },
+                        generationConfig: this.buildGenerationConfig(),
                         safetySettings: [
                             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
                             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -1163,12 +1358,18 @@ Today: ${context.currentDate}`;
 
                 // Switch AI model
                 switchModel: function (modelKey) {
-                    const models = TimeRecordingConfig.ai?.availableModels || {};
-                    if (models[modelKey]) {
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
                         TimeRecordingConfig.ai.model = modelKey;
-                        this.addMessage('model', '\u{1F504} Switched to **' + models[modelKey].name + '** (' + models[modelKey].description + ')');
+                        const caps = [];
+                        if (discovered.supportsThinking) caps.push('thinking');
+                        if (discovered.supportsFunctionCalling) caps.push('function calling');
+                        const capsStr = caps.length > 0 ? ' | Supports: ' + caps.join(', ') : '';
+                        this.addMessage('model', '\u{1F504} Switched to **' + discovered.displayName + '**' + capsStr);
+                        this.updateModelDropdown();
                     } else {
-                        this.addMessage('model', '\u274C Unknown model: ' + modelKey + '. Available: ' + Object.keys(models).join(', '));
+                        const available = this.discoveredModels.map(m => m.displayName).join(', ');
+                        this.addMessage('model', '\u274C Unknown model: ' + modelKey + '. Available: ' + (available || 'none discovered'));
                     }
                 },
 
@@ -1759,6 +1960,7 @@ createTimeRecord: async function(recordData) {
             // Fetch in monthly batches to avoid overwhelming the server
             const allRecords = [];
             const current = new Date(startDate);
+            let batchCount = 0;
             
             while (current < endDate) {
                 const batchEnd = new Date(current);
@@ -1767,15 +1969,24 @@ createTimeRecord: async function(recordData) {
                 
                 const batchStartStr = TimeRecordingUtils.formatDate(current);
                 const batchEndStr = TimeRecordingUtils.formatDate(batchEnd);
+                batchCount++;
                 
                 const requests = [
                     `TimeRecordS4Set?sap-client=${this.SAP_CLIENT}&$filter=Pernr%20eq%20%27${config.userPernr}%27%20and%20RecordDate%20ge%20%27${batchStartStr}%27%20and%20RecordDate%20le%20%27${batchEndStr}%27`
                 ];
                 
-                const response = await this.executeBatchRequest(requests);
-                
-                if (response && response[0]?.d?.results) {
-                    allRecords.push(...response[0].d.results);
+                try {
+                    const response = await this.executeBatchRequest(requests);
+                    
+                    if (response && response[0]?.d?.results) {
+                        const batchRecords = response[0].d.results;
+                        allRecords.push(...batchRecords);
+                        TimeRecordingUtils.log('info', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}): ${batchRecords.length} records`);
+                    } else {
+                        TimeRecordingUtils.log('warning', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}): No results in response`, response);
+                    }
+                } catch (batchError) {
+                    TimeRecordingUtils.log('warning', `  Batch ${batchCount} (${batchStartStr}-${batchEndStr}) failed: ${batchError.message}`);
                 }
                 
                 current.setMonth(current.getMonth() + 1);
@@ -1784,7 +1995,7 @@ createTimeRecord: async function(recordData) {
                 await new Promise(resolve => setTimeout(resolve, 300));
             }
             
-            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months`);
+            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months (${batchCount} batches)`);
             return allRecords;
             
         } catch (error) {
@@ -2128,12 +2339,14 @@ window.TimeRecordingConfig = {
     
     // AI Configuration
     ai: {
-        // Model selection: 'gemini-2.5-flash' (fast, cheap, great for structured output)
-        //                   'gemini-2.5-pro' (deep reasoning, complex multi-step tasks)
+        // Model selection — populated dynamically via ListModels API
+        // Falls back to 'gemini-2.5-flash' if discovery fails
         model: 'gemini-2.5-flash',
-        availableModels: {
-            'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', description: 'Fast & cost-effective — best for daily use', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent' },
-            'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', description: 'Deep reasoning — for complex analysis', endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent' }
+        apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        // Fallback models used only if ListModels API fails
+        fallbackModels: {
+            'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', description: 'Fast & cost-effective' },
+            'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', description: 'Deep reasoning' }
         },
         temperature: 0.15,            // Low temp for deterministic JSON output (was 0.4 — too random)
         maxRetries: 3,                // Auto-retry on API errors or invalid JSON
@@ -2454,11 +2667,6 @@ window.TimeRecordingDrag = {
         location.reload();
     }
 };
-
-// Initialize drag events when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    TimeRecordingDrag.initGlobalDragEvents();
-});
 window.TimeRecordingEdit = {
     currentRecord: null,
     editDialog: null,
@@ -3520,23 +3728,6 @@ Please generate time entries for all these meetings.`;
 document.getElementById('trImportICS').onclick = () => {
     TimeRecordingICS.showImportDialog();
 };
-
-// Add pulse animation to styles
-const style = document.createElement('style');
-style.textContent += `
-    @keyframes pulse {
-        0% {
-            box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.7);
-        }
-        70% {
-            box-shadow: 0 0 0 10px rgba(102, 126, 234, 0);
-        }
-        100% {
-            box-shadow: 0 0 0 0 rgba(102, 126, 234, 0);
-        }
-    }
-`;
-document.head.appendChild(style);
 window.TimeRecordingUI = {
     container: null,
     minimized: false,
@@ -3583,8 +3774,14 @@ window.TimeRecordingUI = {
                                     <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
                                     <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
                                     <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
-                                    <button id="trAISwitchModel" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Switch AI model (Flash/Pro)">⚡</button>
+                                    <button id="trAIApiKey" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Set/change API key">🔑</button>
                                 </div>
+                            </div>
+                            <div style="padding: 6px 15px 0; display: flex; align-items: center; gap: 6px;">
+                                <label style="color: rgba(255,255,255,0.8); font-size: 11px; white-space: nowrap;">Model:</label>
+                                <select id="trAIModelSelect" style="flex: 1; background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 3px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; max-width: 260px;">
+                                    <option value="">Loading models...</option>
+                                </select>
                             </div>
                         </div>
                         <input type="file" id="trAIFileInput" style="display: none;" accept=".txt,.csv,.json,.md,.log,.xml">
@@ -4475,13 +4672,20 @@ window.TimeRecordingUI = {
             };
         }
 
-        // Switch Model button
-        if (document.getElementById('trAISwitchModel')) {
-            document.getElementById('trAISwitchModel').onclick = () => {
+        // Model dropdown
+        if (document.getElementById('trAIModelSelect')) {
+            document.getElementById('trAIModelSelect').onchange = (e) => {
+                if (window.TimeRecordingAI && e.target.value) {
+                    TimeRecordingAI.switchModel(e.target.value);
+                }
+            };
+        }
+
+        // API Key button
+        if (document.getElementById('trAIApiKey')) {
+            document.getElementById('trAIApiKey').onclick = () => {
                 if (window.TimeRecordingAI) {
-                    const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
-                    const newModel = currentModel === 'gemini-2.5-flash' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
-                    TimeRecordingAI.switchModel(newModel);
+                    TimeRecordingAI.promptForApiKey();
                 }
             };
         }
@@ -4999,7 +5203,7 @@ window.TimeRecordingUtils = {
             return;
         }
     }
-    TimeRecordingAI.init("AIzaSyCL-Erm69uT_MkRcFl9z3PbzUlpVfzo8S4");//api key
+    TimeRecordingAI.init();//load api key from storage
     // Initialize application
     async function initialize() {
         try { // Create UI first
