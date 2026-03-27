@@ -324,20 +324,31 @@ window.TimeRecordingEdit = {
                 resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;">No results found</div>';
             } else {
                 let html = '<ul style="list-style: none; padding: 0; margin: 0;">';
-                results.forEach(result => {
+                results.forEach((result, index) => {
+                    const projId = (result.AccProjId || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                    const projDesc = (result.AccProjDesc || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                    const taskId = (result.AccTaskPspId || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                    const taskDesc = (result.AccTaskPspDesc || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
                     html += `
                         <li style="padding: 10px; border: 1px solid #dee2e6; border-radius: 4px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s;"
-                            onclick="window.TimeRecordingEdit.selectPSP('${result.AccProjId}', '${result.AccProjDesc}', '${result.AccTaskPspId}', '${result.AccTaskPspDesc}')"
+                            data-psp-index="${index}"
                             onmouseover="this.style.background='#f0f4ff'" 
                             onmouseout="this.style.background='white'">
-                            <div style="font-weight: bold; margin-bottom: 5px;">${result.AccProjId} - ${result.AccTaskPspId}</div>
-                            <div style="font-size: 12px; color: #666;">${result.AccProjDesc}</div>
-                            <div style="font-size: 12px; color: #666;">${result.AccTaskPspDesc}</div>
+                            <div style="font-weight: bold; margin-bottom: 5px;">${projId} - ${taskId}</div>
+                            <div style="font-size: 12px; color: #666;">${projDesc}</div>
+                            <div style="font-size: 12px; color: #666;">${taskDesc}</div>
                         </li>
                     `;
                 });
                 html += '</ul>';
                 resultsDiv.innerHTML = html;
+                resultsDiv.querySelectorAll('li[data-psp-index]').forEach(li => {
+                    const idx = parseInt(li.dataset.pspIndex);
+                    const r = results[idx];
+                    li.addEventListener('click', () => {
+                        window.TimeRecordingEdit.selectPSP(r.AccProjId, r.AccProjDesc, r.AccTaskPspId, r.AccTaskPspDesc);
+                    });
+                });
             }
             
         } catch (error) {

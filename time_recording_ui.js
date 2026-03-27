@@ -706,6 +706,14 @@ window.TimeRecordingUI = {
         if (dayData.isWorkDay && ! dayData.isHoliday && ! dayData.isFuture) {
             actions.style.display = 'block';
 
+            document.getElementById('trEditDay').onclick = () => {
+                if (dayData.records && dayData.records.length > 0) {
+                    TimeRecordingEdit.showEditDialog(dayData.dateKey, dayData.records[0].Counter);
+                } else {
+                    alert('No records to edit for this day.');
+                }
+            };
+
             document.getElementById('trAddToSelection').onclick = () => {
                 this.selectDay(dayData);
                 this.updateSelectedDaysCount();
@@ -936,40 +944,23 @@ window.TimeRecordingUI = {
                 const errors = [];
                 data.entries.forEach((entry, index) => {
                     if (!entry.date) 
-                        errors.push(`Entry ${
-                            index + 1
-                        }: missing date`);
-                    
-
+                        errors.push(`Entry ${index + 1}: missing date`);
+                    else if (!/^\d{8}$/.test(entry.date))
+                        errors.push(`Entry ${index + 1}: invalid date format (expected YYYYMMDD)`);
 
                     if (!entry.projectId) 
-                        errors.push(`Entry ${
-                            index + 1
-                        }: missing projectId`);
-                    
-
+                        errors.push(`Entry ${index + 1}: missing projectId`);
 
                     if (!entry.taskId) 
-                        errors.push(`Entry ${
-                            index + 1
-                        }: missing taskId`);
-                    
-
+                        errors.push(`Entry ${index + 1}: missing taskId`);
 
                     if (!entry.hours) 
-                        errors.push(`Entry ${
-                            index + 1
-                        }: missing hours`);
-                    
-
+                        errors.push(`Entry ${index + 1}: missing hours`);
+                    else if (isNaN(parseFloat(entry.hours)) || parseFloat(entry.hours) <= 0 || parseFloat(entry.hours) > 24)
+                        errors.push(`Entry ${index + 1}: hours must be a number between 0 and 24`);
 
                     if (!entry.description) 
-                        errors.push(`Entry ${
-                            index + 1
-                        }: missing description`);
-                    
-
-
+                        errors.push(`Entry ${index + 1}: missing description`);
                 });
 
                 if (errors.length > 0) {
