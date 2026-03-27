@@ -16,6 +16,7 @@ if (appcontent) {
                 historyLoadingPromise: null,
                 pendingFunctionCalls: [],
                 pendingDeletion: null,
+                aiNotes: [],
 
                 // Get current AI model endpoint from config
                 getEndpoint: function () {
@@ -109,6 +110,43 @@ if (appcontent) {
                                 },
                                 required: ["date", "counter"]
                             }
+                        },
+                        {
+                            name: "makeNotes",
+                            description: "Use this to think step-by-step before taking action. Write down your reasoning, plan, or observations. This is your internal scratchpad — call it BEFORE making changes to organize your thoughts. Notes are stored for your reference during the conversation.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    thought: { type: "string", description: "Your reasoning, analysis, or observations about the user's request" },
+                                    plan: { type: "array", items: { type: "string" }, description: "Ordered list of steps you plan to take next" }
+                                },
+                                required: ["thought"]
+                            }
+                        },
+                        {
+                            name: "getRecordsForDateRange",
+                            description: "Get all time records for a range of dates at once. Useful for reviewing a week or multi-day period. Returns records grouped by date.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    startDate: { type: "string", description: "Start date in YYYY-MM-DD format" },
+                                    endDate: { type: "string", description: "End date in YYYY-MM-DD format" }
+                                },
+                                required: ["startDate", "endDate"]
+                            }
+                        },
+                        {
+                            name: "searchRecords",
+                            description: "Search time records across the current month by keyword, project ID, or account type. Returns matching records from all days that have time entries.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    keyword: { type: "string", description: "Search keyword to match in description or project name (case-insensitive)" },
+                                    projectId: { type: "string", description: "Filter by exact project ID (optional)" },
+                                    accountInd: { type: "string", description: "Filter by account indicator: '10' for billable, '90' for non-billable (optional)" }
+                                },
+                                required: []
+                            }
                         }
                     ];
                 },
@@ -155,6 +193,12 @@ if (appcontent) {
                             return await this.handleUpdateRecord(args);
                         case 'deleteExistingRecord':
                             return await this.handleDeleteRecord(args);
+                        case 'makeNotes':
+                            return this.handleMakeNotes(args);
+                        case 'getRecordsForDateRange':
+                            return await this.handleGetRecordsForDateRange(args);
+                        case 'searchRecords':
+                            return await this.handleSearchRecords(args);
                         default:
                             return { error: 'Unknown function: ' + name };
                     }
@@ -243,6 +287,120 @@ if (appcontent) {
                     }
                 },
 
+                // Handle makeNotes — AI's internal scratchpad for thinking
+                handleMakeNotes: function (args) {
+                    const note = {
+                        thought: args.thought,
+                        plan: args.plan || [],
+                        timestamp: new Date().toISOString()
+                    };
+                    this.aiNotes.push(note);
+                    TimeRecordingUtils.log('info', 'AI thinking:', args.thought);
+                    if (args.plan && args.plan.length > 0) {
+                        TimeRecordingUtils.log('info', 'AI plan:', args.plan.join(' → '));
+                    }
+                    return { status: 'noted', message: 'Notes recorded. Proceed with your plan.', previousNotes: this.aiNotes.length };
+                },
+
+                // Handle getRecordsForDateRange — fetch records for multiple dates
+                handleGetRecordsForDateRange: async function (args) {
+                    try {
+                        const start = new Date(args.startDate);
+                        const end = new Date(args.endDate);
+                        const results = {};
+                        const current = new Date(start);
+                        let dayCount = 0;
+                        const maxDays = 14; // Safety limit
+
+                        while (current <= end && dayCount < maxDays) {
+                            const dateStr = current.toISOString().split('T')[0];
+                            try {
+                                const records = await TimeRecordingAPI.fetchTimeRecords(new Date(current));
+                                if (records && records.length > 0) {
+                                    results[dateStr] = records;
+                                }
+                            } catch (e) {
+                                results[dateStr] = { error: e.message };
+                            }
+                            current.setDate(current.getDate() + 1);
+                            dayCount++;
+                        }
+                        return { daysQueried: dayCount, daysWithRecords: Object.keys(results).length, records: results };
+                    } catch (error) {
+                        return { error: 'Failed to fetch date range: ' + error.message };
+                    }
+                },
+
+                // Handle searchRecords — search across month by keyword/project/type
+                handleSearchRecords: async function (args) {
+                    try {
+                        const monthData = TimeRecordingCalendar.monthData;
+                        if (!monthData || !monthData.days) {
+                            return { error: 'No month data available' };
+                        }
+
+                        // Find days that have records
+                        const daysWithRecords = monthData.days.filter(d => d.totalHours > 0);
+                        const matches = [];
+                        const maxDaysToFetch = 10; // Limit API calls
+                        const daysToFetch = daysWithRecords.slice(0, maxDaysToFetch);
+
+                        for (const day of daysToFetch) {
+                            try {
+                                const records = await TimeRecordingAPI.fetchTimeRecords(day.date);
+                                if (!records) continue;
+
+                                for (const rec of records) {
+                                    let isMatch = false;
+
+                                    if (args.keyword) {
+                                        const kw = args.keyword.toLowerCase();
+                                        isMatch = (rec.Content || '').toLowerCase().includes(kw) ||
+                                                  (rec.AccProjId || '').toLowerCase().includes(kw) ||
+                                                  (rec.AccProjDesc || '').toLowerCase().includes(kw) ||
+                                                  (rec.AccTaskPspDesc || '').toLowerCase().includes(kw);
+                                    }
+                                    if (args.projectId) {
+                                        isMatch = isMatch || rec.AccProjId === args.projectId;
+                                    }
+                                    if (args.accountInd) {
+                                        isMatch = isMatch || rec.AccountInd === args.accountInd;
+                                    }
+                                    // If no filters provided, return all
+                                    if (!args.keyword && !args.projectId && !args.accountInd) {
+                                        isMatch = true;
+                                    }
+
+                                    if (isMatch) {
+                                        matches.push({
+                                            date: day.dateKey,
+                                            dayName: day.dayName,
+                                            counter: rec.Counter,
+                                            hours: rec.Duration,
+                                            project: rec.AccProjId,
+                                            projectDesc: rec.AccProjDesc,
+                                            task: rec.AccTaskPspId,
+                                            description: rec.Content,
+                                            accountInd: rec.AccountInd
+                                        });
+                                    }
+                                }
+                            } catch (e) {
+                                // Skip days that fail
+                            }
+                        }
+
+                        return {
+                            totalMatches: matches.length,
+                            daysSearched: daysToFetch.length,
+                            totalDaysWithRecords: daysWithRecords.length,
+                            records: matches
+                        };
+                    } catch (error) {
+                        return { error: 'Search failed: ' + error.message };
+                    }
+                },
+
                 // Initialize AI module
                 init: function (apiKey) {
                     this.apiKey = apiKey;
@@ -259,7 +417,21 @@ if (appcontent) {
                     }
 
                     if (this.conversationHistory.length === 0) {
-                        this.addMessage('model', 'Hello! I\'m your Time Recording AI Assistant (powered by **' + this.getModelName() + '**). Here\'s what I can do:\n\n\u{1F4DD} **Record time** \u2014 Tell me what you did: "I refactored the auth module on Monday"\n\u270F\uFE0F **Edit records** \u2014 "Change my Monday entry to 6 hours" or "Update the description on yesterday\'s entry"\n\u{1F5D1}\uFE0F **Delete records** \u2014 "Delete the admin entry from yesterday"\n\u{1F50D} **Smart matching** \u2014 I\'ll find the best project/task and ASK you if I\'m unsure\n\u{1F4CA} **Load history** \u2014 Click \u{1F4CA} to load past records so I understand your work patterns\n\u{1F4CE} **Upload context** \u2014 Click \u{1F4CE} to upload a project/task reference file\n\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard\n\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day\n\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong\n\u{1F527} **Switch model** \u2014 Type "switch to pro" or "switch to flash"\n\nJust describe what you worked on and I\'ll suggest accurate time entries!');
+                        this.addMessage('model', [
+                            'Hello! I\'m your Time Recording AI Assistant (powered by **' + this.getModelName() + '**). Here\'s what I can do:\n',
+                            '\u{1F4DD} **Record time** \u2014 Tell me what you did: "I refactored the auth module on Monday"',
+                            '\u270F\uFE0F **Edit records** \u2014 "Change my Monday entry to 6 hours"',
+                            '\u{1F5D1}\uFE0F **Delete records** \u2014 "Delete the admin entry from yesterday"',
+                            '\u{1F50D} **Search & review** \u2014 "What did I work on last week?" or "Find all platform entries"',
+                            '\u{1F9E0} **Smart thinking** \u2014 I plan my approach before acting on complex requests',
+                            '\u{1F4CA} **Load history** \u2014 Click \u{1F4CA} to load past records so I understand your work patterns',
+                            '\u{1F4CE} **Upload context** \u2014 Click \u{1F4CE} to upload a project/task reference file',
+                            '\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard',
+                            '\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day',
+                            '\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong',
+                            '\u{1F527} **Switch model** \u2014 Type "switch to pro" or "switch to flash"',
+                            '\nJust describe what you worked on and I\'ll suggest accurate time entries!'
+                        ].join('\n'));
 
                         // Proactive: check for missing days and offer to help
                         if (TimeRecordingConfig.ai?.enableProactiveSuggestions) {
@@ -497,23 +669,197 @@ if (appcontent) {
                     let historyBlock = '';
                     if (context.historicalContext) {
                         const h = context.historicalContext;
-                        historyBlock = '\n\n## HISTORICAL WORK PATTERNS (' + h.totalRecords + ' records, ' + h.totalHours + 'h, ' + h.periodStart + '\u2013' + h.periodEnd + ')\n' +
-                            h.topProjects.slice(0, 12).map((p, i) =>
-                                (i+1) + '. ' + (p.projectDesc || p.projectId) + ' (' + p.taskId + ') \u2014 ' + p.totalHours.toFixed(0) + 'h / ' + p.count + ' entries / AccountInd:' + p.accountInd + (p.sampleDescriptions.length > 0 ? ' \u2014 e.g. "' + p.sampleDescriptions[0] + '"' : '')
-                            ).join('\n');
+                        const projectLines = h.topProjects.slice(0, 12).map((p, i) => {
+                            const desc = p.projectDesc || p.projectId;
+                            const sample = p.sampleDescriptions.length > 0 ? ` \u2014 e.g. "${p.sampleDescriptions[0]}"` : '';
+                            return `${i+1}. ${desc} (${p.taskId}) \u2014 ${p.totalHours.toFixed(0)}h / ${p.count} entries / AccountInd:${p.accountInd}${sample}`;
+                        }).join('\n');
+                        historyBlock = `\n\n## HISTORICAL WORK PATTERNS (${h.totalRecords} records, ${h.totalHours}h, ${h.periodStart}\u2013${h.periodEnd})\n${projectLines}`;
                     }
 
                     let fileBlock = '';
                     if (context.fileContext) {
-                        fileBlock = '\n\n## USER CONTEXT FILE ("' + (context.fileContextName || 'unknown') + '")\n' + context.fileContext.substring(0, 20000);
+                        fileBlock = `\n\n## USER CONTEXT FILE ("${context.fileContextName || 'unknown'}")\n${context.fileContext.substring(0, 20000)}`;
                     }
 
-                    return '# ROLE\nYou are a precise, intelligent Time Recording Assistant for SAP CATS. You help a SOFTWARE DEVELOPER record, edit, and manage their work time.\n\n# CAPABILITIES\nYou can:\n1. **Create** new time entries (output JSON with entries array)\n2. **Edit** existing records \u2014 call `getRecordsForDate` to find the Counter, then call `updateExistingRecord` with changes\n3. **Delete** existing records \u2014 call `getRecordsForDate` to find the Counter, then call `deleteExistingRecord` (user must confirm)\n4. **Query** data \u2014 call `getMissingDays`, `getMonthSummary`, `getRecordsForDate`, `getFavorites`, `getProjectDetails`\n5. **Clarify** \u2014 call `askUser` when uncertain\n\n# EDITING WORKFLOW\nWhen the user asks to edit or change an existing record:\n1. First call `getRecordsForDate` to see what records exist on that date\n2. Identify the correct record by matching description, project, or hours\n3. If multiple records match, call `askUser` to clarify which one\n4. Call `updateExistingRecord` with the Counter and only the fields to change\n\nWhen the user asks to delete a record:\n1. First call `getRecordsForDate` to find the Counter\n2. Call `deleteExistingRecord` \u2014 the user will be asked to confirm before deletion happens\n\n# REASONING PROCESS\nFor each user request, follow these steps:\n1. **PARSE** \u2014 What did they do? When? For how long? Is this a create, edit, or delete?\n2. **MATCH** \u2014 Find the best project/task from their favorites or history\n3. **VERIFY** \u2014 If match confidence < 80%, call `askUser` to clarify instead of guessing\n4. **DISTRIBUTE** \u2014 Apply realistic hours (see rules)\n5. **VALIDATE** \u2014 Ensure each day totals 8.0h, descriptions are unique and specific\n\n# TIME DISTRIBUTION RULES\n- Development/billable work: 7.0\u20137.5h/day (AccountInd: "10") \u2014 THIS IS THE MAJORITY\n- Admin/non-billable: MAX 0.5h/day (AccountInd: "90") \u2014 emails, standups, org tasks\n- NEVER: 8h "reading emails", 8h "admin", same description for multiple days\n- ALWAYS: Include ~0.5h admin entry per day unless user says otherwise\n\n# DATE PARSING\nResolve natural language: "Monday" \u2192 most recent Monday, "yesterday" \u2192 yesterday, "last week" \u2192 last week\'s workdays, "the 15th" \u2192 15th of current month. Output as YYYYMMDD.\n\n# WHEN UNCERTAIN\nCall `askUser` with options rather than guessing. Example: "I\'m not sure if this is Tower Application or Tower Platform. Which one?"\n\n# CURRENT CONTEXT\n- Today: ' + context.currentDate + '\n- Selected days: ' + (context.selectedDays.length > 0 ? context.selectedDays.join(', ') : 'none') + '\n- Missing days: ' + (context.missingDays.length > 0 ? context.missingDays.length + ': ' + context.missingDays.slice(0, 8).join(', ') + (context.missingDays.length > 8 ? '...' : '') : 'none') + '\n- Month: ' + (context.monthSummary?.completionRate || 0) + '% complete (' + (context.monthSummary?.totalHours || 0) + 'h / ' + (context.monthSummary?.requiredHours || 0) + 'h)\n\n# RECENT RECORDINGS (for pattern matching)\nLast week: ' + JSON.stringify(TimeRecordingCalendar.getTimes(-1)) + '\nThis week: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0)) + '\n' + (context.selectedDays.length > 0 ? 'Selected days data: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0, context.selectedDays, true)) : '') + historyBlock + fileBlock + '\n\n# AVAILABLE PROJECTS (use EXACT IDs)\n' + context.favorites.map(f => '- "' + f.name + '": ' + f.projectDesc + ' (ProjectID: ' + f.projectId + ', TaskID: ' + f.taskId + ')').join('\n') + '\n\n## Priority projects (use if they match the work description):\nIN 2911.IN.0074-01 \u2014 Employee information, info nuggets\nIN 2911.IN.0072-01..11 \u2014 Meetings Tower (Application/Compute/DataCenter/Delivery/EndUser/ITMgmt/Network/Output/Platform/Security/Storage)\nIN 2911.IN.0073-01..11 \u2014 Idle Time Tower (same tower breakdown)\nAD 2911.AD.0005-01 \u2014 Local Leadership tasks\nAD 2911.AD.0006-01 \u2014 Local administrative work\nTR 2911.TR.0004-01..11 \u2014 Training Tower (same tower breakdown)\n\n# FEW-SHOT EXAMPLES\n\n**User:** "I worked on the application deployment pipeline on Monday"\n**Response:**\n```json\n{"entries":[{"AccountInd":"10","date":"20260323","projectId":"...","taskId":"...","hours":7.5,"description":"Implemented CI/CD pipeline improvements for application deployment, configured staging environment"},{"AccountInd":"90","date":"20260323","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Daily standup, email triage, team coordination"}]}\n```\n\n**User:** "Change my Monday entry from 7.5h to 6h and add a 1.5h meeting entry"\n**Response:** First calls `getRecordsForDate` for Monday, then calls `updateExistingRecord` to change hours to 6, then outputs JSON for the new 1.5h meeting entry.\n\n**User:** "Delete the admin entry from yesterday"\n**Response:** Calls `getRecordsForDate` for yesterday, identifies the admin entry (AccountInd: "90"), calls `deleteExistingRecord` with its Counter.\n\n# OUTPUT FORMAT\nWhen suggesting NEW entries, output EXACTLY ONE JSON block:\n```json\n{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}\n```\nFor edits and deletes, use the `updateExistingRecord` and `deleteExistingRecord` functions directly \u2014 do NOT output JSON.\n\n# RULES\n- If user asks a question, answer it \u2014 do not generate entries unless asked\n- Each day MUST total exactly 8.0 hours (for new entries)\n- Each description must be UNIQUE and SPECIFIC\n- NEVER guess project \u2014 call `askUser` when unsure\n- Combine ALL new entries into ONE JSON block\n- For edits: ALWAYS call `getRecordsForDate` first to get the Counter before calling `updateExistingRecord`\n- For deletes: ALWAYS call `getRecordsForDate` first to get the Counter before calling `deleteExistingRecord`';
+                    const selectedDaysStr = context.selectedDays.length > 0
+                        ? context.selectedDays.join(', ') : 'none';
+                    const missingDaysStr = context.missingDays.length > 0
+                        ? `${context.missingDays.length}: ${context.missingDays.slice(0, 8).join(', ')}${context.missingDays.length > 8 ? '...' : ''}`
+                        : 'none';
+                    const selectedDaysData = context.selectedDays.length > 0
+                        ? '\nSelected days data: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0, context.selectedDays, true))
+                        : '';
+                    const projectList = context.favorites.map(f =>
+                        `- "${f.name}": ${f.projectDesc} (ProjectID: ${f.projectId}, TaskID: ${f.taskId})`
+                    ).join('\n');
+                    const notesBlock = this.aiNotes.length > 0
+                        ? `\n\n## YOUR PREVIOUS NOTES\n${this.aiNotes.slice(-5).map(n => '- ' + n.thought).join('\n')}`
+                        : '';
+                    const fence = '\`\`\`';
+
+                    return `# ROLE
+You are a precise, intelligent Time Recording Assistant for SAP CATS.
+You help a SOFTWARE DEVELOPER record, edit, and manage their work time.
+
+# THINKING PROCESS
+Before taking ANY action on complex requests, THINK FIRST by calling \`makeNotes\`:
+- Analyze what the user is asking
+- List what information you need
+- Plan which function calls to make and in what order
+- Only THEN execute your plan
+
+You have access to function calls that let you gather context and search data.
+USE THEM PROACTIVELY \u2014 don't guess when you can look things up.
+
+# CAPABILITIES
+You can:
+1. **Think** \u2014 call \`makeNotes\` to plan your approach before acting
+2. **Create** new time entries (output JSON with entries array)
+3. **Edit** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`updateExistingRecord\`
+4. **Delete** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`deleteExistingRecord\`
+5. **Query** data \u2014 \`getMissingDays\`, \`getMonthSummary\`, \`getRecordsForDate\`, \`getFavorites\`, \`getProjectDetails\`
+6. **Search** \u2014 \`getRecordsForDateRange\` for multi-day lookups, \`searchRecords\` for keyword/project search
+7. **Clarify** \u2014 \`askUser\` when uncertain
+
+# FUNCTION CALLING STRATEGY
+- Call \`makeNotes\` first to plan complex requests
+- Call \`getRecordsForDate\` or \`getRecordsForDateRange\` to see existing data before making changes
+- Call \`searchRecords\` to find records matching a keyword or project across the month
+- Call \`getFavorites\` if you need to look up available projects
+- Chain multiple function calls when needed \u2014 call one, get results, then call another
+
+# EDITING WORKFLOW
+When the user asks to edit or change an existing record:
+1. First call \`getRecordsForDate\` to see what records exist on that date
+2. Identify the correct record by matching description, project, or hours
+3. If multiple records match, call \`askUser\` to clarify which one
+4. Call \`updateExistingRecord\` with the Counter and only the fields to change
+
+When the user asks to delete a record:
+1. First call \`getRecordsForDate\` to find the Counter
+2. Call \`deleteExistingRecord\` \u2014 the user will be asked to confirm before deletion happens
+
+# REASONING PROCESS
+For each user request:
+1. **THINK** \u2014 Call \`makeNotes\` to plan your approach for complex requests
+2. **GATHER** \u2014 Use function calls to get the data you need
+3. **PARSE** \u2014 What did they do? When? For how long? Is this create, edit, or delete?
+4. **MATCH** \u2014 Find the best project/task from favorites or history
+5. **VERIFY** \u2014 If match confidence < 80%, call \`askUser\` to clarify instead of guessing
+6. **DISTRIBUTE** \u2014 Apply realistic hours (see rules)
+7. **VALIDATE** \u2014 Ensure each day totals 8.0h, descriptions are unique and specific
+
+# TIME DISTRIBUTION RULES
+- Development/billable work: 7.0\u20137.5h/day (AccountInd: "10") \u2014 THIS IS THE MAJORITY
+- Admin/non-billable: MAX 0.5h/day (AccountInd: "90") \u2014 emails, standups, org tasks
+- NEVER: 8h "reading emails", 8h "admin", same description for multiple days
+- ALWAYS: Include ~0.5h admin entry per day unless user says otherwise
+
+# DATE PARSING
+Resolve natural language:
+- "Monday" \u2192 most recent Monday
+- "yesterday" \u2192 yesterday
+- "last week" \u2192 last week's workdays
+- "the 15th" \u2192 15th of current month
+Output as YYYYMMDD.
+
+# WHEN UNCERTAIN
+Call \`askUser\` with options rather than guessing.
+Example: "I'm not sure if this is Tower Application or Tower Platform. Which one?"
+
+# CURRENT CONTEXT
+- Today: ${context.currentDate}
+- Selected days: ${selectedDaysStr}
+- Missing days: ${missingDaysStr}
+- Month: ${context.monthSummary?.completionRate || 0}% complete (${context.monthSummary?.totalHours || 0}h / ${context.monthSummary?.requiredHours || 0}h)
+
+# RECENT RECORDINGS (for pattern matching)
+Last week: ${JSON.stringify(TimeRecordingCalendar.getTimes(-1))}
+This week: ${JSON.stringify(TimeRecordingCalendar.getTimes(0))}${selectedDaysData}${historyBlock}${fileBlock}${notesBlock}
+
+# AVAILABLE PROJECTS (use EXACT IDs)
+${projectList}
+
+## Priority projects (use if they match the work description):
+IN 2911.IN.0074-01 \u2014 Employee information, info nuggets
+IN 2911.IN.0072-01..11 \u2014 Meetings Tower (Application/Compute/DataCenter/Delivery/EndUser/ITMgmt/Network/Output/Platform/Security/Storage)
+IN 2911.IN.0073-01..11 \u2014 Idle Time Tower (same tower breakdown)
+AD 2911.AD.0005-01 \u2014 Local Leadership tasks
+AD 2911.AD.0006-01 \u2014 Local administrative work
+TR 2911.TR.0004-01..11 \u2014 Training Tower (same tower breakdown)
+
+# FEW-SHOT EXAMPLES
+
+**User:** "I worked on the application deployment pipeline on Monday"
+**Response:**
+${fence}json
+{"entries":[{"AccountInd":"10","date":"20260323","projectId":"...","taskId":"...","hours":7.5,"description":"Implemented CI/CD pipeline improvements for application deployment, configured staging environment"},{"AccountInd":"90","date":"20260323","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Daily standup, email triage, team coordination"}]}
+${fence}
+
+**User:** "Change my Monday entry from 7.5h to 6h and add a 1.5h meeting entry"
+**Response:** First calls \`makeNotes\` to plan, then \`getRecordsForDate\` for Monday, then \`updateExistingRecord\` to change hours to 6, then outputs JSON for the new 1.5h meeting entry.
+
+**User:** "Delete the admin entry from yesterday"
+**Response:** Calls \`getRecordsForDate\` for yesterday, identifies the admin entry (AccountInd: "90"), calls \`deleteExistingRecord\` with its Counter.
+
+**User:** "What did I work on last week?"
+**Response:** Calls \`makeNotes\` to plan, then \`getRecordsForDateRange\` for last week, reviews the data, and provides a summary.
+
+**User:** "Find all my platform entries this month"
+**Response:** Calls \`searchRecords\` with keyword "platform", then summarizes the results.
+
+# OUTPUT FORMAT
+When suggesting NEW entries, output EXACTLY ONE JSON block:
+${fence}json
+{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}
+${fence}
+For edits and deletes, use \`updateExistingRecord\` and \`deleteExistingRecord\` directly \u2014 do NOT output JSON.
+
+# RULES
+- If user asks a question, answer it \u2014 do not generate entries unless asked
+- Each day MUST total exactly 8.0 hours (for new entries)
+- Each description must be UNIQUE and SPECIFIC
+- NEVER guess project \u2014 call \`askUser\` when unsure
+- Combine ALL new entries into ONE JSON block
+- For edits: ALWAYS call \`getRecordsForDate\` first to get the Counter
+- For deletes: ALWAYS call \`getRecordsForDate\` first to get the Counter
+- THINK FIRST: For complex requests, call \`makeNotes\` to plan before acting
+- GATHER DATA: Use \`searchRecords\` or \`getRecordsForDateRange\` to research before suggesting changes`;
                 },
 
                 // Build prompt for meeting imports
                 buildPromptForMeetings: function (message, context, meetings) {
-                    return 'You are a Time Recording Assistant. Create time entries for these meetings.\n\nRULES:\n1. Use EXACT meeting name in description\n2. Use EXACT duration (not rounded to 8h)\n3. If PSP element (format: XXXX.XX.XXXX-XX-XX) appears in title, use it as project\n4. Each meeting = one entry on its specific date\n5. Include meeting time (e.g., "09:00-10:30") in description\n\nAvailable Projects:\n' + context.favorites.map(f => '- "' + f.name + '": ProjectID: ' + f.projectId + ', TaskID: ' + f.taskId).join('\n') + '\n\nPriority mappings: IN 2911.IN.0072-01..11 = Meetings Tower, AD 2911.AD.0005-01 = Leadership, AD 2911.AD.0006-01 = Admin\n\nMeeting Data:\n' + meetings + '\n\nOutput ONE JSON block:\n```json\n{"entries":[{"date":"YYYYMMDD","projectId":"id","taskId":"task_id","hours":1.5,"description":"EXACT meeting title (HH:MM-HH:MM)"}]}\n```\nToday: ' + context.currentDate;
+                    const projectList = context.favorites.map(f =>
+                        `- "${f.name}": ProjectID: ${f.projectId}, TaskID: ${f.taskId}`
+                    ).join('\n');
+                    const fence = '\`\`\`';
+
+                    return `You are a Time Recording Assistant. Create time entries for these meetings.
+
+RULES:
+1. Use EXACT meeting name in description
+2. Use EXACT duration (not rounded to 8h)
+3. If PSP element (format: XXXX.XX.XXXX-XX-XX) appears in title, use it as project
+4. Each meeting = one entry on its specific date
+5. Include meeting time (e.g., "09:00-10:30") in description
+
+Available Projects:
+${projectList}
+
+Priority mappings:
+IN 2911.IN.0072-01..11 = Meetings Tower
+AD 2911.AD.0005-01 = Leadership
+AD 2911.AD.0006-01 = Admin
+
+Meeting Data:
+${meetings}
+
+Output ONE JSON block:
+${fence}json
+{"entries":[{"date":"YYYYMMDD","projectId":"id","taskId":"task_id","hours":1.5,"description":"EXACT meeting title (HH:MM-HH:MM)"}]}
+${fence}
+Today: ${context.currentDate}`;
                 },
 
                 // Main API call with native function calling support
