@@ -957,7 +957,7 @@ window.TimeRecordingUI = {
                     if (!entry.hours) 
                         errors.push(`Entry ${index + 1}: missing hours`);
                     else if (isNaN(parseFloat(entry.hours)) || parseFloat(entry.hours) <= 0 || parseFloat(entry.hours) > 24)
-                        errors.push(`Entry ${index + 1}: hours must be a number between 0 and 24`);
+                        errors.push(`Entry ${index + 1}: hours must be greater than 0 and at most 24`);
 
                     if (!entry.description) 
                         errors.push(`Entry ${index + 1}: missing description`);
