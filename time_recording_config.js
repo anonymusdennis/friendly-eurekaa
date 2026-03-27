@@ -29,6 +29,31 @@ window.TimeRecordingConfig = {
         year: new Date().getFullYear()
     },
     
+    // AI Configuration
+    ai: {
+        // Model selection — populated dynamically via ListModels API
+        // Falls back to 'gemini-2.5-flash' if discovery fails
+        model: 'gemini-2.5-flash',
+        apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        // Fallback models used only if ListModels API fails
+        fallbackModels: {
+            'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', description: 'Fast & cost-effective' },
+            'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', description: 'Deep reasoning' }
+        },
+        temperature: 0.15,            // Low temp for deterministic JSON output (was 0.4 — too random)
+        maxRetries: 3,                // Auto-retry on API errors or invalid JSON
+        retryDelayMs: 1500,           // Delay between retries
+        confidenceThreshold: 0.8,     // Below this, AI asks the user instead of guessing
+        defaultHistoryMonths: 12,     // Default months of history to load
+        maxNonBillableHoursPerDay: 0.5, // Admin/non-billable max ~30 min/day
+        typicalBillableHoursPerDay: 7.5, // Typical development/billable hours
+        maxClipboardLength: 50000,    // Max clipboard text length to process
+        maxFileContextLength: 100000, // Max file context length
+        enableFunctionCalling: true,  // Use native Gemini function calling
+        enableProactiveSuggestions: true, // AI proactively suggests filling missing days
+        enableSelfValidation: true,   // Validate entries before showing review dialog
+    },
+
     // UI Configuration
     ui: {
         colors: {

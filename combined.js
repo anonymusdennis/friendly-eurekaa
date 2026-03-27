@@ -1,761 +1,1714 @@
-// Time Recording Calendar - Enhanced AI Assistant Module
-window.TimeRecordingAI = {
-    apiKey: null,
-    apiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent',
-    conversationHistory: [],
-    maxHistoryLength: 20,
+            window.TimeRecordingAI = {
+                apiKey: null,
+                conversationHistory: [],
+                maxHistoryLength: 20,
+                historicalContext: null,
+                fileContext: null,
+                fileContextName: null,
+                historyLoaded: false,
+                historyLoadingPromise: null,
+                pendingFunctionCalls: [],
+                pendingDeletion: null,
+                aiNotes: [],
+                discoveredModels: [],
+                modelsLoaded: false,
+                calendarHighlights: {},  // {dateKey: {color, label}}
+                calendarNotes: {},       // {dateKey: {emoji, text}} — persisted in localStorage
+                statusLog: [],           // [{timestamp, type, message}] for status popup
 
-    // Available functions the AI can call
-    availableFunctions: {
-        getMissingDays: {
-            description: "Get list of days missing time records",
-            execute: async () => {
-                const monthData = TimeRecordingCalendar.monthData;
-                const missingDays = [];
-                if (monthData && monthData.days) {
-                    monthData.days.forEach(day => {
-                        if (day.isWorkDay && !day.isHoliday && !day.isFuture && day.totalHours === 0) {
-                            missingDays.push({
-                                date: day.dateKey,
-                                displayDate: TimeRecordingUtils.formatDisplayDate(day.date),
-                                dayName: day.dayName
-                            });
+                // Get API base URL from config
+                getApiBaseUrl: function () {
+                    return TimeRecordingConfig.ai?.apiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
+                },
+
+                // Get current AI model endpoint — built dynamically from model name
+                getEndpoint: function () {
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        return `${this.getApiBaseUrl()}/${discovered.name}:generateContent`;
+                    }
+                    // Fallback: construct from model key
+                    return `${this.getApiBaseUrl()}/models/${modelKey}:generateContent`;
+                },
+
+                // Get current model name for display
+                getModelName: function () {
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) return discovered.displayName;
+                    const fallback = TimeRecordingConfig.ai?.fallbackModels || {};
+                    return fallback[modelKey]?.name || modelKey;
+                },
+
+                // Get current model capabilities
+                getModelCapabilities: function () {
+                    const modelKey = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        return {
+                            supportsThinking: discovered.supportsThinking,
+                            supportsFunctionCalling: discovered.supportsFunctionCalling,
+                            maxOutputTokens: discovered.maxOutputTokens,
+                            maxInputTokens: discovered.maxInputTokens
+                        };
+                    }
+                    // Default capabilities for unknown models
+                    return {
+                        supportsThinking: false,
+                        supportsFunctionCalling: true,
+                        maxOutputTokens: 8192,
+                        maxInputTokens: 1048576
+                    };
+                },
+
+                // Discover available models via Gemini ListModels API
+                listModels: async function () {
+                    if (!this.apiKey) return;
+                    try {
+                        const response = await fetch(
+                            `${this.getApiBaseUrl()}/models?key=${this.apiKey}`
+                        );
+                        if (!response.ok) {
+                            throw new Error('ListModels failed: ' + response.status);
                         }
+                        const data = await response.json();
+                        if (!data.models || !Array.isArray(data.models)) {
+                            throw new Error('Invalid ListModels response');
+                        }
+
+                        // Filter for models that support generateContent
+                        const generateModels = data.models.filter(m =>
+                            m.supportedGenerationMethods &&
+                            m.supportedGenerationMethods.includes('generateContent')
+                        );
+
+                        // Map to our internal format
+                        this.discoveredModels = generateModels.map(m => {
+                            const id = m.name.replace('models/', '');
+                            const isThinking = id.includes('thinking') ||
+                                (m.description && m.description.toLowerCase().includes('thinking'));
+                            return {
+                                id: id,
+                                name: m.name,
+                                displayName: m.displayName || id,
+                                description: m.description || '',
+                                maxInputTokens: m.inputTokenLimit || 0,
+                                maxOutputTokens: m.outputTokenLimit || 0,
+                                supportsThinking: isThinking || id.includes('2.5'),
+                                supportsFunctionCalling: true,
+                                temperature: m.temperature,
+                                topP: m.topP,
+                                topK: m.topK
+                            };
+                        });
+
+                        // Sort: gemini-2.5 models first, then by name
+                        this.discoveredModels.sort((a, b) => {
+                            const a25 = a.id.includes('2.5') ? 0 : 1;
+                            const b25 = b.id.includes('2.5') ? 0 : 1;
+                            if (a25 !== b25) return a25 - b25;
+                            return a.displayName.localeCompare(b.displayName);
+                        });
+
+                        this.modelsLoaded = true;
+                        TimeRecordingUtils.log('info', `Discovered ${this.discoveredModels.length} available models`);
+
+                        // Validate current model exists in discovered list
+                        const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                        const modelExists = this.discoveredModels.some(m => m.id === currentModel);
+                        if (!modelExists && this.discoveredModels.length > 0) {
+                            // Find closest match or use first 2.5 model
+                            const preferred = this.discoveredModels.find(m => m.id.includes('2.5-flash')) ||
+                                            this.discoveredModels.find(m => m.id.includes('flash')) ||
+                                            this.discoveredModels[0];
+                            TimeRecordingConfig.ai.model = preferred.id;
+                            TimeRecordingUtils.log('info', `Model ${currentModel} not available, switched to ${preferred.id}`);
+                        }
+
+                        // Update UI dropdown
+                        this.updateModelDropdown();
+
+                    } catch (error) {
+                        TimeRecordingUtils.log('warning', 'Failed to discover models, using fallbacks: ' + error.message);
+                        // Build discovered models from fallback config
+                        const fallback = TimeRecordingConfig.ai?.fallbackModels || {};
+                        this.discoveredModels = Object.entries(fallback).map(([id, info]) => ({
+                            id: id,
+                            name: 'models/' + id,
+                            displayName: info.name || id,
+                            description: info.description || '',
+                            maxInputTokens: 1048576,
+                            maxOutputTokens: 8192,
+                            supportsThinking: id.includes('2.5'),
+                            supportsFunctionCalling: true
+                        }));
+                        this.modelsLoaded = true;
+                        this.updateModelDropdown();
+                    }
+                },
+
+                // Update the model dropdown in the UI
+                updateModelDropdown: function () {
+                    const dropdown = document.getElementById('trAIModelSelect');
+                    if (!dropdown) return;
+                    const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    dropdown.innerHTML = '';
+                    this.discoveredModels.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.displayName;
+                        opt.title = m.description;
+                        opt.style.color = '#333';
+                        opt.style.background = 'white';
+                        if (m.id === currentModel) opt.selected = true;
+                        dropdown.appendChild(opt);
                     });
-                }
-                return missingDays;
-            }
-        },
-        getRecordsForDate: {
-            description: "Get time records for a specific date",
-            execute: async (date) => {
-                return await TimeRecordingAPI.fetchTimeRecords(new Date(date));
-            }
-        },
-        getProjectDetails: {
-            description: "Get details about a project",
-            execute: async (projectId) => {
-                return await TimeRecordingAPI.getProjectDetails(projectId);
-            }
-        },
-        getMonthSummary: {
-            description: "Get current month summary",
-            execute: async () => {
-                const monthData = TimeRecordingCalendar.monthData;
-                return {
-                    month: monthData.monthName,
-                    totalHours: monthData.totalHours,
-                    requiredHours: monthData.requiredHours,
-                    completionRate: monthData.completionRate,
-                    daysWithRecords: monthData.days.filter(d => d.totalHours > 0).length,
-                    missingDays: monthData.days.filter(d => d.isWorkDay && !d.isHoliday && !d.isFuture && d.totalHours === 0).length
-                };
-            }
-        },
-        getFavorites: {
-            description: "Get user's favorite projects",
-            execute: async () => {
-                return TimeRecordingAPI.getUserFavorites();
-            }
-        }
-    },
+                },
 
-    // Initialize AI module
-    init: function (apiKey) {
-        this.apiKey = apiKey;
-        if (! apiKey) {
-            TimeRecordingUtils.log('warning', 'AI module initialized without API key');
-        }
-    },
+                // Native Gemini function declarations for tool calling
+                getFunctionDeclarations: function () {
+                    return [
+                        {
+                            name: "getMissingDays",
+                            description: "Get working days missing time records in the currently displayed calendar month. Returns date keys, formatted display dates, and day names.",
+                            parameters: { type: "object", properties: {}, required: [] }
+                        },
+                        {
+                            name: "getRecordsForDate",
+                            description: "Get all time records for a specific date. Returns project IDs, descriptions, hours, and details.",
+                            parameters: {
+                                type: "object",
+                                properties: { date: { type: "string", description: "Date in YYYY-MM-DD format" } },
+                                required: ["date"]
+                            }
+                        },
+                        {
+                            name: "getMonthSummary",
+                            description: "Get a summary of the current month including total hours, required hours, completion rate, and missing days count.",
+                            parameters: { type: "object", properties: {}, required: [] }
+                        },
+                        {
+                            name: "getFavorites",
+                            description: "Get the user's favorite projects/tasks list with project IDs, task IDs, names and descriptions.",
+                            parameters: { type: "object", properties: {}, required: [] }
+                        },
+                        {
+                            name: "getProjectDetails",
+                            description: "Get detailed information about a specific project by its ID.",
+                            parameters: {
+                                type: "object",
+                                properties: { projectId: { type: "string", description: "The project ID to look up" } },
+                                required: ["projectId"]
+                            }
+                        },
+                        {
+                            name: "askUser",
+                            description: "Ask the user a clarifying question when you are not confident about the project match, date, or hours. Use this INSTEAD of guessing. Include options you are considering.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    question: { type: "string", description: "The clarifying question to ask" },
+                                    options: { type: "array", items: { type: "string" }, description: "Options the user can choose from" },
+                                    context: { type: "string", description: "Why you are asking — what you are uncertain about" }
+                                },
+                                required: ["question"]
+                            }
+                        },
+                        {
+                            name: "updateExistingRecord",
+                            description: "Update an existing time record. First call getRecordsForDate to find the record's Counter, then call this with the counter and fields to change. Only provide fields you want to modify — others are kept as-is.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date of the record in YYYY-MM-DD format" },
+                                    counter: { type: "string", description: "The Counter ID of the record to update (get this from getRecordsForDate)" },
+                                    hours: { type: "number", description: "New duration in hours (optional — only if changing)" },
+                                    description: { type: "string", description: "New description/content (optional — only if changing)" },
+                                    projectId: { type: "string", description: "New project ID (optional — only if changing)" },
+                                    taskId: { type: "string", description: "New task/PSP ID (optional — only if changing)" },
+                                    accountInd: { type: "string", description: "New account indicator: '10' for billable, '90' for non-billable (optional)" }
+                                },
+                                required: ["date", "counter"]
+                            }
+                        },
+                        {
+                            name: "deleteExistingRecord",
+                            description: "Delete an existing time record. First call getRecordsForDate to find the record's Counter, then call this. The user will be asked to confirm before deletion.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date of the record in YYYY-MM-DD format" },
+                                    counter: { type: "string", description: "The Counter ID of the record to delete (get this from getRecordsForDate)" },
+                                    reason: { type: "string", description: "Brief reason for deletion (shown to user in confirmation)" }
+                                },
+                                required: ["date", "counter"]
+                            }
+                        },
+                        {
+                            name: "makeNotes",
+                            description: "Use this to think step-by-step before taking action. Write down your reasoning, plan, or observations. This is your internal scratchpad — call it BEFORE making changes to organize your thoughts. Notes are stored for your reference during the conversation.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    thought: { type: "string", description: "Your reasoning, analysis, or observations about the user's request" },
+                                    plan: { type: "array", items: { type: "string" }, description: "Ordered list of steps you plan to take next" }
+                                },
+                                required: ["thought"]
+                            }
+                        },
+                        {
+                            name: "getRecordsForDateRange",
+                            description: "Get all time records for a range of dates at once. Useful for reviewing a week or multi-day period. Returns records grouped by date. Limited to 14 days max.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    startDate: { type: "string", description: "Start date in YYYY-MM-DD format" },
+                                    endDate: { type: "string", description: "End date in YYYY-MM-DD format" }
+                                },
+                                required: ["startDate", "endDate"]
+                            }
+                        },
+                        {
+                            name: "searchRecords",
+                            description: "Search time records across the current month by keyword, project ID, or account type. Searches up to 10 days with records. Returns matching records.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    keyword: { type: "string", description: "Search keyword to match in description or project name (case-insensitive)" },
+                                    projectId: { type: "string", description: "Filter by exact project ID (optional)" },
+                                    accountInd: { type: "string", description: "Filter by account indicator: '10' for billable, '90' for non-billable (optional)" }
+                                },
+                                required: []
+                            }
+                        },
+                        {
+                            name: "highlightDay",
+                            description: "Visually highlight a calendar day with a colored border and optional label. Use this to show the user which day you are currently working on or to draw attention to specific dates. The highlight is temporary and will be cleared on refresh.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date in YYYY-MM-DD format" },
+                                    color: { type: "string", description: "CSS color for the highlight border (e.g. '#667eea', '#28a745', '#ff6b6b'). Default: '#667eea' (purple)" },
+                                    label: { type: "string", description: "Short label to show on the day (e.g. '🔍 checking', '✅ done', '📝 editing')" }
+                                },
+                                required: ["date"]
+                            }
+                        },
+                        {
+                            name: "clearHighlights",
+                            description: "Remove all AI visual highlights from the calendar. Call this when you are done working on a set of days.",
+                            parameters: { type: "object", properties: {}, required: [] }
+                        },
+                        {
+                            name: "addCalendarNote",
+                            description: "Add a persistent client-side note to a calendar day, displayed like a holiday. Notes are stored locally and survive page refreshes. Use for reminders, markers, or custom annotations the user wants to see on the calendar.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date in YYYY-MM-DD format" },
+                                    emoji: { type: "string", description: "Emoji to display (e.g. '📌', '⭐', '🎯', '🔔'). Default: '📌'" },
+                                    text: { type: "string", description: "Short text to display on the calendar day (max ~30 chars)" }
+                                },
+                                required: ["date", "text"]
+                            }
+                        },
+                        {
+                            name: "removeCalendarNote",
+                            description: "Remove a persistent client-side note from a calendar day.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    date: { type: "string", description: "Date in YYYY-MM-DD format" }
+                                },
+                                required: ["date"]
+                            }
+                        },
+                        {
+                            name: "createTimeEntry",
+                            description: "Create new time entries for the user. Shows a review dialog where the user can approve, edit, or reject entries before they are saved. Use this when you have determined the correct project, task, hours, and description for one or more days.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    entries: {
+                                        type: "array",
+                                        description: "Array of time entry objects to create",
+                                        items: {
+                                            type: "object",
+                                            properties: {
+                                                date: { type: "string", description: "Date in YYYYMMDD format (e.g. '20260206')" },
+                                                projectId: { type: "string", description: "Project ID (e.g. '2911.UM.0074')" },
+                                                taskId: { type: "string", description: "Task/PSP element ID (e.g. '2911.UM.0074-07-07-02')" },
+                                                hours: { type: "number", description: "Duration in hours (e.g. 7.5)" },
+                                                description: { type: "string", description: "Description of the work done" },
+                                                accountInd: { type: "string", description: "Account indicator: '10' for billable, '90' for non-billable. Default: '10'" }
+                                            },
+                                            required: ["date", "projectId", "taskId", "hours", "description"]
+                                        }
+                                    }
+                                },
+                                required: ["entries"]
+                            }
+                        }
+                    ];
+                },
 
-    // Initialize chat interface
-    initializeChat: function () {
-        if (!this.apiKey) {
-            this.addMessage('model', 'AI Assistant is not configured. Please provide an API key using TimeRecordingAI.init("your-api-key")');
-            return;
-        }
+                // Execute a function call from the AI
+                executeFunctionByName: async function (name, args) {
+                    switch (name) {
+                        case 'getMissingDays': {
+                            const monthData = TimeRecordingCalendar.monthData;
+                            const missingDays = [];
+                            if (monthData && monthData.days) {
+                                monthData.days.forEach(day => {
+                                    if (day.isWorkDay && !day.isHoliday && !day.isFuture && day.totalHours === 0) {
+                                        missingDays.push({
+                                            date: day.dateKey,
+                                            displayDate: TimeRecordingUtils.formatDisplayDate(day.date),
+                                            dayName: day.dayName
+                                        });
+                                    }
+                                });
+                            }
+                            return missingDays;
+                        }
+                        case 'getRecordsForDate':
+                            return await TimeRecordingAPI.fetchTimeRecords(new Date(args.date));
+                        case 'getMonthSummary': {
+                            const md = TimeRecordingCalendar.monthData;
+                            return {
+                                month: md.monthName,
+                                totalHours: md.totalHours,
+                                requiredHours: md.requiredHours,
+                                completionRate: md.completionRate,
+                                daysWithRecords: md.days.filter(d => d.totalHours > 0).length,
+                                missingDays: md.days.filter(d => d.isWorkDay && !d.isHoliday && !d.isFuture && d.totalHours === 0).length
+                            };
+                        }
+                        case 'getFavorites':
+                            return TimeRecordingAPI.getUserFavorites();
+                        case 'getProjectDetails':
+                            return await TimeRecordingAPI.getProjectDetails(args.projectId);
+                        case 'askUser':
+                            return this.handleAskUser(args);
+                        case 'updateExistingRecord':
+                            return await this.handleUpdateRecord(args);
+                        case 'deleteExistingRecord':
+                            return await this.handleDeleteRecord(args);
+                        case 'makeNotes':
+                            return this.handleMakeNotes(args);
+                        case 'getRecordsForDateRange':
+                            return await this.handleGetRecordsForDateRange(args);
+                        case 'searchRecords':
+                            return await this.handleSearchRecords(args);
+                        case 'highlightDay':
+                            return this.handleHighlightDay(args);
+                        case 'clearHighlights':
+                            return this.handleClearHighlights();
+                        case 'addCalendarNote':
+                            return this.handleAddCalendarNote(args);
+                        case 'removeCalendarNote':
+                            return this.handleRemoveCalendarNote(args);
+                        case 'createTimeEntry':
+                            return this.handleCreateTimeEntry(args);
+                        default:
+                            return { error: 'Unknown function: ' + name };
+                    }
+                },
 
-        if (this.conversationHistory.length === 0) {
-            this.addMessage('model', `Hello! I'm your Time Recording AI Assistant. I can:
-- Record time entries for multiple days
-- Analyze your time patterns
-- Suggest time allocations
-- Help with missing days
+                // Handle the askUser callback — display question to user in chat
+                handleAskUser: function (args) {
+                    let msg = '\u{1F914} **I need your input:**\n\n' + args.question;
+                    if (args.options && args.options.length > 0) {
+                        msg += '\n\n**Options:**\n';
+                        args.options.forEach((opt, i) => {
+                            msg += (i + 1) + '. ' + opt + '\n';
+                        });
+                        msg += '\nPlease reply with your choice (number or description).';
+                    }
+                    if (args.context) {
+                        msg += '\n\n_Context: ' + args.context + '_';
+                    }
+                    this.addMessage('model', msg);
+                    return { status: 'waiting_for_user_response', question: args.question };
+                },
 
-I have access to your calendar data and can help you quickly record your work time. Just describe what you worked on!`);
-        }
-    },
+                // Handle createTimeEntry — show the review dialog for AI-proposed entries
+                handleCreateTimeEntry: function (args) {
+                    const entries = args.entries;
+                    if (!entries || entries.length === 0) {
+                        this.addMessage('model', '\u274C No entries provided to create.');
+                        return { error: 'No entries provided' };
+                    }
 
-    // Send message to AI with enhanced context
-    sendMessage: async function (message) {
-        if (!this.apiKey) {
-            this.addMessage('user', message);
-            this.addMessage('model', 'Please configure the AI with an API key first.');
-            return;
-        }
+                    // Validate and show in chat
+                    this.addMessage('model', '\u{1F4DD} Here are **' + entries.length + '** suggested time entries for your review:', { entries });
 
-        // Add user message to chat
-        this.addMessage('user', message);
+                    // Run self-validation
+                    if (TimeRecordingConfig.ai?.enableSelfValidation !== false) {
+                        const warnings = this.validateEntries(entries);
+                        if (warnings.length > 0) {
+                            this.addMessage('model', '\u26A0\uFE0F **Validation warnings:**\n' + warnings.join('\n') + '\n\nYou can still import \u2014 or ask me to fix these.');
+                        }
+                    }
 
-        // Check if message contains a function request
-        const functionCall = await this.checkForFunctionCall(message);
-        if (functionCall) {
-            await this.executeFunctionCall(functionCall);
-            return;
-        }
+                    // Show the review/import popup
+                    this.showEntryReviewDialog(entries);
 
-        // Prepare enhanced context
-        const context = await this.prepareEnhancedContext();
+                    return { status: 'review_dialog_shown', entryCount: entries.length };
+                },
 
-        // Show typing indicator
-        this.showTypingIndicator();
+                // Handle updating an existing time record
+                handleUpdateRecord: async function (args) {
+                    try {
+                        // Fetch the existing record by date and counter
+                        const dateKey = args.date.replace(/-/g, '');
+                        const record = await TimeRecordingEdit.fetchSingleRecord(dateKey, args.counter);
+                        if (!record) {
+                            return { error: 'Record not found with counter ' + args.counter + ' on ' + args.date };
+                        }
 
-        try {
-            const response = await this.callGeminiAPI(message, context);
-            this.hideTypingIndicator();
+                        // Apply only the fields that were provided
+                        const updatedRecord = { ...record, Mode: 'U' };
+                        if (args.hours !== undefined) updatedRecord.Duration = args.hours.toString();
+                        if (args.description !== undefined) updatedRecord.Content = args.description;
+                        if (args.projectId !== undefined) updatedRecord.AccProjId = args.projectId;
+                        if (args.taskId !== undefined) updatedRecord.AccTaskPspId = args.taskId;
+                        if (args.accountInd !== undefined) updatedRecord.AccountInd = args.accountInd;
 
-            // Process AI response
-            this.processAIResponse(response);
+                        // Build a summary of changes for the user
+                        const changes = [];
+                        if (args.hours !== undefined) changes.push('hours: ' + record.Duration + ' \u2192 ' + args.hours);
+                        if (args.description !== undefined) changes.push('description: "' + (record.Content || '').substring(0, 40) + '" \u2192 "' + args.description.substring(0, 40) + '"');
+                        if (args.projectId !== undefined) changes.push('project: ' + record.AccProjId + ' \u2192 ' + args.projectId);
+                        if (args.taskId !== undefined) changes.push('task: ' + record.AccTaskPspId + ' \u2192 ' + args.taskId);
+                        if (args.accountInd !== undefined) changes.push('billable: ' + record.AccountInd + ' \u2192 ' + args.accountInd);
 
-        } catch (error) {
-            this.hideTypingIndicator();
-            TimeRecordingUtils.log('error', 'AI request failed', error);
-            this.addMessage('model', 'Sorry, I encountered an error. Please try again. Error: ' + error.message);
-        }
-    },
+                        this.addMessage('model', '\u270F\uFE0F **Updating record** (Counter: ' + args.counter + ', Date: ' + args.date + '):\n' + changes.map(c => '\u2022 ' + c).join('\n'));
 
-    // Check if message requests a function call
-    checkForFunctionCall: async function (message) {
-        const lowerMessage = message.toLowerCase();
+                        const result = await TimeRecordingEdit.updateTimeRecord(updatedRecord);
+                        if (result) {
+                            TimeRecordingCalendar.refresh();
+                            this.addMessage('model', '\u2705 Record updated successfully!');
+                            return { success: true, changes: changes };
+                        } else {
+                            return { error: 'SAP API returned no result — update may have failed' };
+                        }
+                    } catch (error) {
+                        return { error: 'Failed to update record: ' + error.message };
+                    }
+                },
 
-        if (lowerMessage.includes('missing days') || lowerMessage.includes('which days')) {
-            return 'getMissingDays';
-        }
-        if (lowerMessage.includes('month summary') || lowerMessage.includes('how many hours')) {
-            return 'getMonthSummary';
-        }
-        if (lowerMessage.includes('show favorites') || lowerMessage.includes('list projects')) {
-            return 'getFavorites';
-        }
+                // Handle deleting an existing time record
+                handleDeleteRecord: async function (args) {
+                    try {
+                        const dateKey = args.date.replace(/-/g, '');
+                        const record = await TimeRecordingEdit.fetchSingleRecord(dateKey, args.counter);
+                        if (!record) {
+                            return { error: 'Record not found with counter ' + args.counter + ' on ' + args.date };
+                        }
 
-        return null;
-    },
+                        // Show what will be deleted and ask for confirmation
+                        const desc = record.Content || '(no description)';
+                        const hours = record.Duration || '?';
+                        const project = record.AccProjId || '(no project)';
+                        const reason = args.reason || 'User requested deletion';
 
-    // Execute function call
-    executeFunctionCall: async function (functionName) {
-        this.showTypingIndicator();
+                        this.addMessage('model', '\u{1F5D1}\uFE0F **Delete request** for record on ' + args.date + ':\n\u2022 ' + hours + 'h \u2014 ' + project + '\n\u2022 "' + desc + '"\n\u2022 Reason: ' + reason + '\n\nType **"yes, delete"** to confirm or **"cancel"** to abort.');
 
-        try {
-            const result = await this.availableFunctions[functionName].execute();
-            this.hideTypingIndicator();
+                        // Store pending deletion for confirmation
+                        this.pendingDeletion = { record: record, date: args.date, counter: args.counter };
+                        return { status: 'waiting_for_deletion_confirmation', record: { date: args.date, counter: args.counter, hours: hours, description: desc } };
+                    } catch (error) {
+                        return { error: 'Failed to prepare deletion: ' + error.message };
+                    }
+                },
 
-            // Format and display result
-            let message = '';
-            if (functionName === 'getMissingDays') {
-                if (result.length === 0) {
-                    message = '✅ Great! All working days have time records.';
-                } else {
-                    message = `📅 Days missing time records (${
-                        result.length
-                    } days):\n\n`;
-                    message += result.map(d => `• ${
-                        d.displayDate
-                    } (${
-                        d.dayName
-                    })`).join('\n');
-                    message += '\n\nWould you like me to help you record time for these days?';
-                }
-            } else if (functionName === 'getMonthSummary') {
-                message = `📊 ${
-                    result.month
-                } Summary:\n`;
-                message += `• Total Hours: ${
-                    result.totalHours
-                }h of ${
-                    result.requiredHours
-                }h (${
-                    result.completionRate
-                }%)\n`;
-                message += `• Days with records: ${
-                    result.daysWithRecords
-                }\n`;
-                message += `• Missing days: ${
-                    result.missingDays
-                }`;
-            } else if (functionName === 'getFavorites') {
-                message = `⭐ Your Favorite Projects:\n\n`;
-                message += result.slice(0, 10).map((f, i) => `${
-                    i + 1
-                }. ${
-                    f.Name
-                }\n   Project: ${
-                    f.AccProjDesc
-                }\n   ID: ${
-                    f.AccProjId
-                }`).join('\n\n');
-            }
+                // Handle makeNotes — AI's internal scratchpad for thinking
+                handleMakeNotes: function (args) {
+                    const note = {
+                        thought: args.thought,
+                        plan: args.plan || [],
+                        timestamp: new Date().toISOString()
+                    };
+                    this.aiNotes.push(note);
+                    TimeRecordingUtils.log('info', 'AI thinking:', args.thought);
+                    if (args.plan && args.plan.length > 0) {
+                        TimeRecordingUtils.log('info', 'AI plan:', args.plan.join(' → '));
+                    }
+                    return { status: 'noted', message: 'Notes recorded. Proceed with your plan.', previousNotes: this.aiNotes.length };
+                },
 
-            this.addMessage('model', message);
+                // Handle getRecordsForDateRange — fetch records for multiple dates
+                handleGetRecordsForDateRange: async function (args) {
+                    try {
+                        const start = new Date(args.startDate);
+                        const end = new Date(args.endDate);
+                        const results = {};
+                        const current = new Date(start);
+                        let dayCount = 0;
+                        const maxDays = 14; // Safety limit
 
-        } catch (error) {
-            this.hideTypingIndicator();
-            this.addMessage('model', `Error executing function: ${
-                error.message
-            }`);
-        }
-    },
+                        while (current <= end && dayCount < maxDays) {
+                            const dateStr = current.toISOString().split('T')[0];
+                            try {
+                                const records = await TimeRecordingAPI.fetchTimeRecords(new Date(current));
+                                if (records && records.length > 0) {
+                                    results[dateStr] = records;
+                                }
+                            } catch (e) {
+                                results[dateStr] = { error: e.message };
+                            }
+                            current.setDate(current.getDate() + 1);
+                            dayCount++;
+                        }
+                        return { daysQueried: dayCount, daysWithRecords: Object.keys(results).length, records: results };
+                    } catch (error) {
+                        return { error: 'Failed to fetch date range: ' + error.message };
+                    }
+                },
 
-    // Prepare enhanced context with chat history
-    prepareEnhancedContext: async function () {
-        const currentMonth = TimeRecordingCalendar.monthData;
-        const favorites = TimeRecordingAPI.getUserFavorites();
+                // Handle searchRecords — search across month by keyword/project/type
+                handleSearchRecords: async function (args) {
+                    try {
+                        const monthData = TimeRecordingCalendar.monthData;
+                        if (!monthData || !monthData.days) {
+                            return { error: 'No month data available' };
+                        }
 
-        // Get selected days
-        const selectedDays = Array.from(TimeRecordingUI.selectedDays || []);
+                        // Find days that have records
+                        const daysWithRecords = monthData.days.filter(d => d.totalHours > 0);
+                        const matches = [];
+                        const maxDaysToFetch = 10; // Limit API calls
+                        const daysToFetch = daysWithRecords.slice(0, maxDaysToFetch);
 
-        // Get missing days
-        const missingDays = await this.availableFunctions.getMissingDays.execute();
+                        for (const day of daysToFetch) {
+                            try {
+                                const records = await TimeRecordingAPI.fetchTimeRecords(day.date);
+                                if (!records) continue;
 
-        // Get recent chat history (last 10 exchanges)
-        const recentHistory = this.conversationHistory.slice(-10).map(msg => ({
-            role: msg.sender,
-            parts: [
-                {
-                    text: msg.content.replace(/<[^>]*>/g, '') // Remove HTML tags
-                }
-            ]
-        }));
+                                for (const rec of records) {
+                                    let isMatch = false;
 
-        return {
-            currentDate: new Date().toISOString().split('T')[0],
-            selectedDays: selectedDays,
-            missingDays: missingDays.map(d => d.date),
-            favorites: favorites.map(f => ({
-                guid: f.Guid,
-                name: f.Name,
-                projectId: f.AccProjId,
-                projectDesc: f.AccProjDesc,
-                taskId: f.AccTaskPspId,
-                taskDesc: f.AccTaskPspDesc
-            })),
-            monthSummary: currentMonth ? {
-                month: currentMonth.monthName,
-                totalHours: currentMonth.totalHours,
-                requiredHours: currentMonth.requiredHours,
-                completionRate: currentMonth.completionRate
-            } : null,
-            chatHistory: recentHistory
-        };
-    },
-    buildPromptForMeetings: function (message, context, meetings) {
-        return `You are an intelligent Time Recording Assistant for SAP. You need to create time entries for meetings.
+                                    if (args.keyword) {
+                                        const kw = args.keyword.toLowerCase();
+                                        isMatch = (rec.Content || '').toLowerCase().includes(kw) ||
+                                                  (rec.AccProjId || '').toLowerCase().includes(kw) ||
+                                                  (rec.AccProjDesc || '').toLowerCase().includes(kw) ||
+                                                  (rec.AccTaskPspDesc || '').toLowerCase().includes(kw);
+                                    }
+                                    if (args.projectId) {
+                                        isMatch = isMatch || rec.AccProjId === args.projectId;
+                                    }
+                                    if (args.accountInd) {
+                                        isMatch = isMatch || rec.AccountInd === args.accountInd;
+                                    }
+                                    // If no filters provided, return all
+                                    if (!args.keyword && !args.projectId && !args.accountInd) {
+                                        isMatch = true;
+                                    }
 
-CRITICAL RULES FOR MEETING IMPORTS:
-1. Use the EXACT meeting name in the description - DO NOT paraphrase or summarize
-2. Use the EXACT duration specified for each meeting
-3. If a PSP element (format: XXXX.XX.XXXX-XX-XX-XX) appears in the meeting title, use it as the accounting object
-4. Each meeting gets its own time entry on the specific date it occurred
-5. Preserve the original meeting information in the description
+                                    if (isMatch) {
+                                        matches.push({
+                                            date: day.dateKey,
+                                            dayName: day.dayName,
+                                            counter: rec.Counter,
+                                            hours: rec.Duration,
+                                            project: rec.AccProjId,
+                                            projectDesc: rec.AccProjDesc,
+                                            task: rec.AccTaskPspId,
+                                            description: rec.Content,
+                                            accountInd: rec.AccountInd
+                                        });
+                                    }
+                                }
+                            } catch (e) {
+                                // Skip days that fail
+                            }
+                        }
 
-Current Context:
-- Import period: ${
-            context.importStartDate
-        } to ${
-            context.importEndDate
-        }
-- Available Projects: 
-${
-            context.favorites.map(f => `  - "${
-                f.name
-            }": ProjectID: ${
-                f.projectId
-            }, TaskID: ${
-                f.taskId
-            }`).join('\n')
-        }
+                        return {
+                            totalMatches: matches.length,
+                            daysSearched: daysToFetch.length,
+                            totalDaysWithRecords: daysWithRecords.length,
+                            records: matches
+                        };
+                    } catch (error) {
+                        return { error: 'Search failed: ' + error.message };
+                    }
+                },
 
-Meeting Data to Import:
-${meetings}
+                // ─── Calendar Visual Overlay Handlers ─────────────────────────
 
-Instructions:
-1. Create one time entry per meeting
-2. Match PSP elements from meeting titles to project IDs
-3. If no PSP match, try to intelligently match based on meeting content
-4. Use exact meeting duration (not rounded to 8 hours)
+                handleHighlightDay: function (args) {
+                    const dateKey = args.date.replace(/-/g, '');
+                    const color = args.color || '#667eea';
+                    const label = args.label || '';
+                    this.calendarHighlights[dateKey] = { color, label };
+                    this.applyHighlight(dateKey, color, label);
+                    this.logStatus('highlight', 'Highlighted ' + args.date + (label ? ' — ' + label : ''));
+                    return { status: 'ok', date: args.date, color, label };
+                },
+
+                handleClearHighlights: function () {
+                    const count = Object.keys(this.calendarHighlights).length;
+                    for (const dateKey of Object.keys(this.calendarHighlights)) {
+                        this.removeHighlight(dateKey);
+                    }
+                    this.calendarHighlights = {};
+                    this.logStatus('highlight', 'Cleared ' + count + ' highlights');
+                    return { status: 'ok', cleared: count };
+                },
+
+                handleAddCalendarNote: function (args) {
+                    const dateKey = args.date.replace(/-/g, '');
+                    const emoji = args.emoji || '\u{1F4CC}';
+                    const text = (args.text || '').substring(0, 40);
+                    this.calendarNotes[dateKey] = { emoji, text };
+                    this.saveCalendarNotes();
+                    this.applyCalendarNote(dateKey, emoji, text);
+                    this.logStatus('note', 'Added note to ' + args.date + ': ' + emoji + ' ' + text);
+                    return { status: 'ok', date: args.date, emoji, text };
+                },
+
+                handleRemoveCalendarNote: function (args) {
+                    const dateKey = args.date.replace(/-/g, '');
+                    if (this.calendarNotes[dateKey]) {
+                        delete this.calendarNotes[dateKey];
+                        this.saveCalendarNotes();
+                        this.removeCalendarNoteElement(dateKey);
+                        this.logStatus('note', 'Removed note from ' + args.date);
+                        return { status: 'ok', removed: args.date };
+                    }
+                    return { status: 'ok', message: 'No note found on ' + args.date };
+                },
+
+                // Apply a visual highlight to a calendar day cell
+                applyHighlight: function (dateKey, color, label) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    cell.style.boxShadow = 'inset 0 0 0 3px ' + color;
+                    cell.style.transition = 'box-shadow 0.3s ease';
+                    // Add or update label overlay
+                    let overlay = cell.querySelector('.tr-ai-highlight-label');
+                    if (label) {
+                        if (!overlay) {
+                            overlay = document.createElement('div');
+                            overlay.className = 'tr-ai-highlight-label';
+                            overlay.style.cssText = 'position:absolute;top:2px;right:2px;font-size:10px;background:' + color + ';color:white;padding:1px 4px;border-radius:3px;z-index:5;white-space:nowrap;pointer-events:none;';
+                            cell.style.position = 'relative';
+                            cell.appendChild(overlay);
+                        }
+                        overlay.textContent = label;
+                        overlay.style.background = color;
+                    } else if (overlay) {
+                        overlay.remove();
+                    }
+                },
+
+                // Remove a highlight from a calendar day cell
+                removeHighlight: function (dateKey) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    cell.style.boxShadow = '';
+                    const overlay = cell.querySelector('.tr-ai-highlight-label');
+                    if (overlay) overlay.remove();
+                },
+
+                // Apply a persistent calendar note to a day cell
+                applyCalendarNote: function (dateKey, emoji, text) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    // Remove existing note if present
+                    this.removeCalendarNoteElement(dateKey);
+                    const noteEl = document.createElement('div');
+                    noteEl.className = 'tr-ai-calendar-note';
+                    noteEl.style.cssText = 'font-size:10px;color:#764ba2;text-align:center;margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+                    noteEl.textContent = emoji + ' ' + text;
+                    cell.appendChild(noteEl);
+                },
+
+                // Remove a calendar note element from a day cell
+                removeCalendarNoteElement: function (dateKey) {
+                    const cell = document.querySelector('.tr-calendar-day[data-date="' + dateKey + '"]');
+                    if (!cell) return;
+                    const existing = cell.querySelector('.tr-ai-calendar-note');
+                    if (existing) existing.remove();
+                },
+
+                // Save calendar notes to localStorage
+                saveCalendarNotes: function () {
+                    TimeRecordingUtils.storage.save('ai_calendar_notes', JSON.stringify(this.calendarNotes));
+                },
+
+                // Load calendar notes from localStorage
+                loadCalendarNotes: function () {
+                    try {
+                        const raw = TimeRecordingUtils.storage.load('ai_calendar_notes', '{}');
+                        this.calendarNotes = JSON.parse(raw);
+                    } catch (e) {
+                        this.calendarNotes = {};
+                    }
+                },
+
+                // Re-apply all highlights and notes after calendar render
+                reapplyCalendarOverlays: function () {
+                    for (const [dateKey, h] of Object.entries(this.calendarHighlights)) {
+                        this.applyHighlight(dateKey, h.color, h.label);
+                    }
+                    for (const [dateKey, n] of Object.entries(this.calendarNotes)) {
+                        this.applyCalendarNote(dateKey, n.emoji, n.text);
+                    }
+                },
+
+                // ─── Status Log for Debug Popup ─────────────────────────
+
+                logStatus: function (type, message) {
+                    const entry = { timestamp: new Date().toISOString(), type, message };
+                    this.statusLog.push(entry);
+                    if (this.statusLog.length > 200) this.statusLog.shift();
+                    this.updateStatusPopup(entry);
+                },
+
+                // Update the status popup window if it's open
+                updateStatusPopup: function (entry) {
+                    const container = document.getElementById('trAIStatusLog');
+                    if (!container) return;
+                    const line = document.createElement('div');
+                    line.style.cssText = 'padding:3px 0;border-bottom:1px solid #f0f0f0;font-size:11px;font-family:monospace;';
+                    const time = entry.timestamp.substring(11, 19);
+                    const typeColors = { highlight: '#667eea', note: '#764ba2', function: '#28a745', thinking: '#ffc107', error: '#dc3545', info: '#6c757d' };
+                    const color = typeColors[entry.type] || '#333';
+                    line.innerHTML = '<span style="color:#999;">' + time + '</span> <span style="color:' + color + ';font-weight:bold;">[' + entry.type + ']</span> ' + entry.message.replace(/</g, '&lt;');
+                    container.appendChild(line);
+                    container.scrollTop = container.scrollHeight;
+                },
+
+                // ─── End Calendar Visual / Status Methods ─────────────────
+
+                // Initialize AI module — load API key from storage
+                init: async function (apiKey) {
+                    // Load persisted calendar notes
+                    this.loadCalendarNotes();
+                    // If key passed directly, save it; otherwise load from storage
+                    if (apiKey) {
+                        this.apiKey = apiKey;
+                        this.saveApiKey(apiKey);
+                    } else {
+                        this.apiKey = this.loadApiKey();
+                    }
+                    if (!this.apiKey) {
+                        TimeRecordingUtils.log('warning', 'AI module initialized without API key');
+                        return;
+                    }
+                    // Discover available models on init
+                    await this.listModels();
+                },
+
+                // Save API key to localStorage
+                saveApiKey: function (key) {
+                    TimeRecordingUtils.storage.save('ai_api_key', key);
+                },
+
+                // Load API key from localStorage
+                loadApiKey: function () {
+                    return TimeRecordingUtils.storage.load('ai_api_key', null);
+                },
+
+                // Remove API key from localStorage
+                removeApiKey: function () {
+                    TimeRecordingUtils.storage.remove('ai_api_key');
+                    this.apiKey = null;
+                    this.discoveredModels = [];
+                    this.modelsLoaded = false;
+                },
+
+                // Prompt user for API key and store it
+                promptForApiKey: async function () {
+                    const key = prompt(
+                        'Enter your Google Gemini API key:\n\n' +
+                        'Get one free at: https://aistudio.google.com/apikey\n\n' +
+                        'The key is stored locally in your browser and never sent anywhere except the Gemini API.'
+                    );
+                    if (key && key.trim()) {
+                        this.apiKey = key.trim();
+                        this.saveApiKey(this.apiKey);
+                        this.addMessage('model', '\u{1F511} API key saved! Discovering available models...');
+                        await this.listModels();
+                        this.addMessage('model', '\u2705 Ready! Found **' + this.discoveredModels.length + '** models. Using **' + this.getModelName() + '**.');
+                    } else {
+                        this.addMessage('model', '\u274C No API key provided. AI features are disabled.\n\nClick \u{1F511} to set your API key.');
+                    }
+                },
+
+                // Initialize chat interface
+                initializeChat: function () {
+                    if (!this.apiKey) {
+                        this.addMessage('model', '\u{1F511} **API key not configured.** Click the \u{1F511} button above to enter your Gemini API key.\n\nGet a free key at: https://aistudio.google.com/apikey');
+                        return;
+                    }
+
+                    if (this.conversationHistory.length === 0) {
+                        this.addMessage('model', [
+                            'Hello! I\'m your Time Recording AI Assistant (powered by **' + this.getModelName() + '**). Here\'s what I can do:\n',
+                            '\u{1F4DD} **Record time** \u2014 Tell me what you did: "I refactored the auth module on Monday"',
+                            '\u270F\uFE0F **Edit records** \u2014 "Change my Monday entry to 6 hours"',
+                            '\u{1F5D1}\uFE0F **Delete records** \u2014 "Delete the admin entry from yesterday"',
+                            '\u{1F50D} **Search & review** \u2014 "What did I work on last week?" or "Find all platform entries"',
+                            '\u{1F9E0} **Smart thinking** \u2014 I plan my approach before acting on complex requests',
+                            '\u{1F4CA} **Load history** \u2014 Click \u{1F4CA} to load past records so I understand your work patterns',
+                            '\u{1F4CE} **Upload context** \u2014 Click \u{1F4CE} to upload a project/task reference file',
+                            '\u{1F4CB} **Clipboard analysis** \u2014 Click \u{1F4CB} and I\'ll extract work from your clipboard',
+                            '\u2696\uFE0F **Realistic hours** \u2014 Development ~7.5h + admin ~0.5h per day',
+                            '\u{1F504} **Self-correcting** \u2014 I validate entries and auto-retry if something goes wrong',
+                            '\u{1F527} **Switch model** \u2014 Use the dropdown or type "switch to pro"',
+                            '\u{1F511} **API key** \u2014 Click \u{1F511} to manage your API key (stored locally)',
+                            '\nJust describe what you worked on and I\'ll suggest accurate time entries!'
+                        ].join('\n'));
+
+                        // Proactive: check for missing days and offer to help
+                        if (TimeRecordingConfig.ai?.enableProactiveSuggestions) {
+                            this.offerProactiveSuggestions();
+                        }
+                    }
+                },
+
+                // Proactive: check for missing days and offer to help
+                offerProactiveSuggestions: async function () {
+                    try {
+                        const monthData = TimeRecordingCalendar.monthData;
+                        if (!monthData || !monthData.days) return;
+
+                        const missingDays = monthData.days.filter(
+                            d => d.isWorkDay && !d.isHoliday && !d.isFuture && d.totalHours === 0
+                        );
+
+                        if (missingDays.length > 0 && missingDays.length <= 10) {
+                            const dates = missingDays.slice(0, 5).map(d =>
+                                TimeRecordingUtils.formatDisplayDate(d.date) + ' (' + d.dayName + ')'
+                            ).join(', ');
+                            const more = missingDays.length > 5 ? ' and ' + (missingDays.length - 5) + ' more' : '';
+
+                            setTimeout(() => {
+                                this.addMessage('model', '\u{1F4A1} **Quick tip:** You have **' + missingDays.length + ' missing days** this month: ' + dates + more + '.\n\nTell me what you worked on and I\'ll fill them in! Or type "fill missing days" and I\'ll suggest entries based on your recent patterns.');
+                            }, 2000);
+                        }
+                    } catch (e) {
+                        // Silent fail
+                    }
+                },
+
+                // Load historical records for AI context
+                loadHistoricalRecords: async function (months) {
+                    if (this.historyLoadingPromise) {
+                        this.addMessage('model', '\u23F3 History is already being loaded, please wait...');
+                        return this.historyLoadingPromise;
+                    }
+
+                    this.addMessage('model', '\u{1F4CA} Loading ' + months + ' months of historical records... This may take a moment.');
+                    this.showTypingIndicator();
+
+                    this.historyLoadingPromise = (async () => {
+                        try {
+                            const records = await TimeRecordingAPI.fetchHistoricalRecords(months);
+                            this.historicalContext = TimeRecordingAPI.summarizeHistoricalRecords(records);
+                            this.historyLoaded = true;
+                            this.hideTypingIndicator();
+
+                            if (this.historicalContext) {
+                                const summary = this.historicalContext;
+                                let msg = '\u2705 **History loaded!** ' + summary.totalRecords + ' records from ' + summary.periodStart + ' to ' + summary.periodEnd + ' (' + summary.totalHours + 'h total)\n\n';
+                                msg += '**Top projects by hours:**\n';
+                                summary.topProjects.slice(0, 8).forEach((p, i) => {
+                                    msg += (i + 1) + '. ' + (p.projectDesc || p.projectId) + ' \u2014 ' + p.totalHours.toFixed(1) + 'h (' + p.count + ' entries, avg ' + p.avgHoursPerEntry + 'h)\n';
+                                });
+                                msg += '\nI now have deep context about your work patterns and can make much better suggestions!';
+                                this.addMessage('model', msg);
+                            } else {
+                                this.addMessage('model', '\u26A0\uFE0F No historical records found for the specified period.');
+                            }
+                        } catch (error) {
+                            this.hideTypingIndicator();
+                            this.addMessage('model', '\u274C Failed to load history: ' + error.message);
+                        } finally {
+                            this.historyLoadingPromise = null;
+                        }
+                    })();
+
+                    return this.historyLoadingPromise;
+                },
+
+                // Process uploaded file as context
+                processFileUpload: function (content, filename) {
+                    const maxLen = TimeRecordingConfig.ai?.maxFileContextLength || 100000;
+                    if (content.length > maxLen) {
+                        content = content.substring(0, maxLen);
+                        this.addMessage('model', '\u26A0\uFE0F File was truncated to ' + maxLen + ' characters to fit context limits.');
+                    }
+                    this.fileContext = content;
+                    this.fileContextName = filename;
+                    this.addMessage('model', '\u{1F4CE} **File loaded:** "' + filename + '" (' + content.length + ' chars)\nThis context will be included in all future AI requests to help match tasks and projects.');
+                },
+
+                // Process clipboard content
+                processClipboardContent: async function (clipboardText) {
+                    if (!clipboardText || !clipboardText.trim()) {
+                        this.addMessage('model', '\u{1F4CB} Clipboard is empty. Please copy some text first.');
+                        return;
+                    }
+
+                    const maxLen = TimeRecordingConfig.ai?.maxClipboardLength || 50000;
+                    if (clipboardText.length > maxLen) {
+                        clipboardText = clipboardText.substring(0, maxLen);
+                    }
+
+                    const clipboardPrompt = 'CLIPBOARD CONTENT ANALYSIS:\nThe user pasted clipboard content. Extract WHAT WORK was done, WHICH DAYS it relates to, and match to the best project/task.\nIf dates are unclear, use the askUser function to ask.\n\nCLIPBOARD:\n---\n' + clipboardText + '\n---\n\nAnalyze and suggest time entries. If dates are unclear, call askUser to clarify.';
+
+                    await this.sendMessage(clipboardPrompt);
+                },
+
+                // Send message with enhanced context, function calling, and auto-retry
+                sendMessage: async function (message) {
+                    if (!this.apiKey) {
+                        this.addMessage('user', message);
+                        this.addMessage('model', 'Please configure the AI with an API key first.');
+                        return;
+                    }
+
+                    // Check for model switch command (text-based)
+                    const lowerMsg = message.toLowerCase().trim();
+                    const switchMatch = lowerMsg.match(/^(?:switch to|use)\s+(.+)$/);
+                    if (switchMatch) {
+                        const searchTerm = switchMatch[1].trim();
+                        const match = this.discoveredModels.find(m =>
+                            m.id.toLowerCase().includes(searchTerm) ||
+                            m.displayName.toLowerCase().includes(searchTerm)
+                        );
+                        if (match) {
+                            this.switchModel(match.id);
+                            return;
+                        }
+                        // Show available models if no match
+                        const available = this.discoveredModels.map(m => m.displayName).join(', ');
+                        this.addMessage('user', message);
+                        this.addMessage('model', '\u274C No model matching "' + searchTerm + '". Available: ' + available);
+                        return;
+                    }
+
+                    // Handle pending deletion confirmation
+                    if (this.pendingDeletion) {
+                        const pending = this.pendingDeletion;
+                        this.pendingDeletion = null;
+
+                        if (lowerMsg === 'yes, delete' || lowerMsg === 'yes delete' || lowerMsg === 'yes' || lowerMsg === 'confirm') {
+                            this.addMessage('user', message);
+                            try {
+                                const deletePayload = { ...pending.record, Mode: 'D' };
+                                const result = await TimeRecordingEdit.updateTimeRecord(deletePayload);
+                                if (result) {
+                                    TimeRecordingCalendar.refresh();
+                                    this.addMessage('model', '\u2705 Record deleted successfully! (Counter: ' + pending.counter + ' on ' + pending.date + ')');
+                                } else {
+                                    this.addMessage('model', '\u274C Deletion may have failed \u2014 SAP returned no result. Please check the calendar.');
+                                }
+                            } catch (error) {
+                                this.addMessage('model', '\u274C Failed to delete record: ' + error.message);
+                            }
+                            return;
+                        } else {
+                            this.addMessage('user', message);
+                            this.addMessage('model', '\u274C Deletion cancelled.');
+                            // Don't return — let the message flow to the AI as a normal message
+                            if (lowerMsg === 'cancel' || lowerMsg === 'no') return;
+                        }
+                    }
+
+                    this.addMessage('user', message);
+
+                    const context = await this.prepareEnhancedContext();
+                    this.showTypingIndicator();
+                    this.logStatus('thinking', 'Processing: ' + message.substring(0, 80) + (message.length > 80 ? '...' : ''));
+
+                    try {
+                        const maxRetries = TimeRecordingConfig.ai?.maxRetries || 3;
+                        const retryDelay = TimeRecordingConfig.ai?.retryDelayMs || 1500;
+                        let lastError = null;
+
+                        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                            try {
+                                const result = await this.callGeminiWithFunctions(message, context, attempt > 1 ? lastError : null);
+
+                                this.hideTypingIndicator();
+                                this.logStatus('info', 'Response received');
+
+                                // If the result was handled by function calling (askUser), don't process further
+                                if (result === '__ASKED_USER__') return;
+
+                                // If the result was handled by createTimeEntry (review dialog shown), don't process further
+                                if (result === '__CREATED_ENTRIES__') return;
+
+                                this.processAIResponse(result);
+                                return;
+
+                            } catch (error) {
+                                lastError = error.message;
+                                TimeRecordingUtils.log('warning', 'AI attempt ' + attempt + '/' + maxRetries + ' failed: ' + error.message);
+
+                                if (attempt < maxRetries) {
+                                    await new Promise(r => setTimeout(r, retryDelay * attempt));
+                                } else {
+                                    throw error;
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        this.hideTypingIndicator();
+                        this.logStatus('error', 'Failed: ' + error.message);
+                        TimeRecordingUtils.log('error', 'AI request failed after retries', error);
+                        this.addMessage('model', '\u274C Sorry, I encountered an error after multiple attempts. Error: ' + error.message + '\n\nPlease try again or rephrase your request.');
+                    }
+                },
+
+                // Prepare enhanced context
+                prepareEnhancedContext: async function () {
+                    const currentMonth = TimeRecordingCalendar.monthData;
+                    const favorites = TimeRecordingAPI.getUserFavorites();
+                    const selectedDays = Array.from(TimeRecordingUI.selectedDays || []);
+
+                    const missingDays = [];
+                    if (currentMonth && currentMonth.days) {
+                        currentMonth.days.forEach(day => {
+                            if (day.isWorkDay && !day.isHoliday && !day.isFuture && day.totalHours === 0) {
+                                missingDays.push(day.dateKey);
+                            }
+                        });
+                    }
+
+                    const recentHistory = this.conversationHistory.slice(-10).map(msg => ({
+                        role: msg.sender,
+                        parts: [{ text: msg.content.replace(/<[^>]*>/g, '') }]
+                    }));
+
+                    return {
+                        currentDate: new Date().toISOString().split('T')[0],
+                        selectedDays,
+                        missingDays,
+                        favorites: favorites.map(f => ({
+                            guid: f.Guid, name: f.Name,
+                            projectId: f.AccProjId, projectDesc: f.AccProjDesc,
+                            taskId: f.AccTaskPspId, taskDesc: f.AccTaskPspDesc
+                        })),
+                        monthSummary: currentMonth ? {
+                            month: currentMonth.monthName,
+                            totalHours: currentMonth.totalHours,
+                            requiredHours: currentMonth.requiredHours,
+                            completionRate: currentMonth.completionRate
+                        } : null,
+                        chatHistory: recentHistory,
+                        historicalContext: this.historicalContext,
+                        fileContext: this.fileContext,
+                        fileContextName: this.fileContextName,
+                        historyLoaded: this.historyLoaded
+                    };
+                },
+
+                // Build the system prompt
+                buildSystemPrompt: function (context) {
+                    let historyBlock = '';
+                    if (context.historicalContext) {
+                        const h = context.historicalContext;
+                        const projectLines = h.topProjects.slice(0, 12).map((p, i) => {
+                            const desc = p.projectDesc || p.projectId;
+                            const sample = p.sampleDescriptions.length > 0 ? ` \u2014 e.g. "${p.sampleDescriptions[0]}"` : '';
+                            return `${i + 1}. ${desc} (${p.taskId}) \u2014 ${p.totalHours.toFixed(0)}h / ${p.count} entries / AccountInd:${p.accountInd}${sample}`;
+                        }).join('\n');
+                        historyBlock = `\n\n## HISTORICAL WORK PATTERNS (${h.totalRecords} records, ${h.totalHours}h, ${h.periodStart}\u2013${h.periodEnd})\n${projectLines}`;
+                    }
+
+                    let fileBlock = '';
+                    if (context.fileContext) {
+                        fileBlock = `\n\n## USER CONTEXT FILE ("${context.fileContextName || 'unknown'}")\n${context.fileContext.substring(0, 20000)}`;
+                    }
+
+                    const selectedDaysStr = context.selectedDays.length > 0
+                        ? context.selectedDays.join(', ') : 'none';
+                    const missingDaysStr = context.missingDays.length > 0
+                        ? `${context.missingDays.length}: ${context.missingDays.slice(0, 8).join(', ')}${context.missingDays.length > 8 ? '...' : ''}`
+                        : 'none';
+                    const selectedDaysData = context.selectedDays.length > 0
+                        ? '\nSelected days data: ' + JSON.stringify(TimeRecordingCalendar.getTimes(0, context.selectedDays, true))
+                        : '';
+                    const projectList = context.favorites.map(f =>
+                        `- "${f.name}": ${f.projectDesc} (ProjectID: ${f.projectId}, TaskID: ${f.taskId})`
+                    ).join('\n');
+                    const notesBlock = this.aiNotes.length > 0
+                        ? `\n\n## YOUR PREVIOUS NOTES\n${this.aiNotes.slice(-5).map(n => '- ' + n.thought).join('\n')}`
+                        : '';
+                    const fence = '\`\`\`';
+
+                    return `# ROLE
+You are a precise, intelligent Time Recording Assistant for SAP CATS.
+You help a SOFTWARE DEVELOPER record, edit, and manage their work time.
+
+# THINKING PROCESS
+Before taking ANY action on complex requests, THINK FIRST by calling \`makeNotes\`:
+- Analyze what the user is asking
+- List what information you need
+- Plan which function calls to make and in what order
+- Only THEN execute your plan
+
+You have access to function calls that let you gather context and search data.
+USE THEM PROACTIVELY \u2014 don't guess when you can look things up.
+
+# CAPABILITIES
+You can:
+1. **Think** \u2014 call \`makeNotes\` to plan your approach before acting
+2. **Create** new time entries (output JSON with entries array)
+3. **Edit** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`updateExistingRecord\`
+4. **Delete** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`deleteExistingRecord\`
+5. **Query** data \u2014 \`getMissingDays\`, \`getMonthSummary\`, \`getRecordsForDate\`, \`getFavorites\`, \`getProjectDetails\`
+6. **Search** \u2014 \`getRecordsForDateRange\` for multi-day lookups, \`searchRecords\` for keyword/project search
+7. **Clarify** \u2014 \`askUser\` when uncertain
+8. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
+9. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
+
+# VISUAL FEEDBACK STRATEGY
+- When working on multiple days, call \`highlightDay\` on each day you're processing so the user can see your progress
+- Use \`clearHighlights\` when you're done with a batch
+- Use \`addCalendarNote\` when the user asks for reminders, markers, or annotations on specific days
+- Calendar notes persist across page refreshes; highlights are temporary
+
+# FUNCTION CALLING STRATEGY
+- Call \`makeNotes\` first to plan complex requests
+- Call \`getRecordsForDate\` or \`getRecordsForDateRange\` to see existing data before making changes
+- Call \`searchRecords\` to find records matching a keyword or project across the month
+- Call \`getFavorites\` if you need to look up available projects
+- Chain multiple function calls when needed \u2014 call one, get results, then call another
+
+# EDITING WORKFLOW
+When the user asks to edit or change an existing record:
+1. First call \`getRecordsForDate\` to see what records exist on that date
+2. Identify the correct record by matching description, project, or hours
+3. If multiple records match, call \`askUser\` to clarify which one
+4. Call \`updateExistingRecord\` with the Counter and only the fields to change
+
+When the user asks to delete a record:
+1. First call \`getRecordsForDate\` to find the Counter
+2. Call \`deleteExistingRecord\` \u2014 the user will be asked to confirm before deletion happens
+
+# REASONING PROCESS
+For each user request:
+1. **THINK** \u2014 Call \`makeNotes\` to plan your approach for complex requests
+2. **GATHER** \u2014 Use function calls to get the data you need
+3. **PARSE** \u2014 What did they do? When? For how long? Is this create, edit, or delete?
+4. **MATCH** \u2014 Find the best project/task from favorites or history
+5. **VERIFY** \u2014 If match confidence < 80%, call \`askUser\` to clarify instead of guessing
+6. **DISTRIBUTE** \u2014 Apply realistic hours (see rules)
+7. **VALIDATE** \u2014 Ensure each day totals 8.0h, descriptions are unique and specific
+
+# TIME DISTRIBUTION RULES
+- Development/billable work: 7.0\u20137.5h/day (AccountInd: "10") \u2014 THIS IS THE MAJORITY
+- Admin/non-billable: MAX 0.5h/day (AccountInd: "90") \u2014 emails, standups, org tasks
+- NEVER: 8h "reading emails", 8h "admin", same description for multiple days
+- ALWAYS: Include ~0.5h admin entry per day unless user says otherwise
+
+# DATE PARSING
+Resolve natural language:
+- "Monday" \u2192 most recent Monday
+- "yesterday" \u2192 yesterday
+- "last week" \u2192 last week's workdays
+- "the 15th" \u2192 15th of current month
+Output as YYYYMMDD.
+
+# WHEN UNCERTAIN
+Call \`askUser\` with options rather than guessing.
+Example: "I'm not sure if this is Tower Application or Tower Platform. Which one?"
+
+# CURRENT CONTEXT
+- Today: ${context.currentDate}
+- Selected days: ${selectedDaysStr}
+- Missing days: ${missingDaysStr}
+- Month: ${context.monthSummary?.completionRate || 0}% complete (${context.monthSummary?.totalHours || 0}h / ${context.monthSummary?.requiredHours || 0}h)
+
+# RECENT RECORDINGS (for pattern matching)
+Last week: ${JSON.stringify(TimeRecordingCalendar.getTimes(-1))}
+This week: ${JSON.stringify(TimeRecordingCalendar.getTimes(0))}${selectedDaysData}${historyBlock}${fileBlock}${notesBlock}
+
+# AVAILABLE PROJECTS (use EXACT IDs)
+${projectList}
+
+## Priority projects (use if they match the work description):
+IN 2911.IN.0074-01 \u2014 Employee information, info nuggets
+IN 2911.IN.0072-01..11 \u2014 Meetings Tower (Application/Compute/DataCenter/Delivery/EndUser/ITMgmt/Network/Output/Platform/Security/Storage)
+IN 2911.IN.0073-01..11 \u2014 Idle Time Tower (same tower breakdown)
+AD 2911.AD.0005-01 \u2014 Local Leadership tasks
+AD 2911.AD.0006-01 \u2014 Local administrative work
+TR 2911.TR.0004-01..11 \u2014 Training Tower (same tower breakdown)
+
+# FEW-SHOT EXAMPLES
+
+**User:** "I worked on the application deployment pipeline on Monday"
+**Response:**
+${fence}json
+{"entries":[{"AccountInd":"10","date":"20260323","projectId":"...","taskId":"...","hours":7.5,"description":"Implemented CI/CD pipeline improvements for application deployment, configured staging environment"},{"AccountInd":"90","date":"20260323","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Daily standup, email triage, team coordination"}]}
+${fence}
+
+**User:** "Change my Monday entry from 7.5h to 6h and add a 1.5h meeting entry"
+**Response:** First calls \`makeNotes\` to plan, then \`getRecordsForDate\` for Monday, then \`updateExistingRecord\` to change hours to 6, then outputs JSON for the new 1.5h meeting entry.
+
+**User:** "Delete the admin entry from yesterday"
+**Response:** Calls \`getRecordsForDate\` for yesterday, identifies the admin entry (AccountInd: "90"), calls \`deleteExistingRecord\` with its Counter.
+
+**User:** "What did I work on last week?"
+**Response:** Calls \`makeNotes\` to plan, then \`getRecordsForDateRange\` for last week, reviews the data, and provides a summary.
+
+**User:** "Find all my platform entries this month"
+**Response:** Calls \`searchRecords\` with keyword "platform", then summarizes the results.
+
+# OUTPUT FORMAT
+When suggesting NEW entries, output EXACTLY ONE JSON block:
+${fence}json
+{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}
+${fence}
+For edits and deletes, use \`updateExistingRecord\` and \`deleteExistingRecord\` directly \u2014 do NOT output JSON.
+
+# RULES
+- If user asks a question, answer it \u2014 do not generate entries unless asked
+- Each day MUST total exactly 8.0 hours (for new entries)
+- Each description must be UNIQUE and SPECIFIC
+- NEVER guess project \u2014 call \`askUser\` when unsure
+- Combine ALL new entries into ONE JSON block
+- For edits: ALWAYS call \`getRecordsForDate\` first to get the Counter
+- For deletes: ALWAYS call \`getRecordsForDate\` first to get the Counter
+- THINK FIRST: For complex requests, call \`makeNotes\` to plan before acting
+- GATHER DATA: Use \`searchRecords\` or \`getRecordsForDateRange\` to research before suggesting changes`;
+                },
+
+                // Build prompt for meeting imports
+                buildPromptForMeetings: function (message, context, meetings) {
+                    const projectList = context.favorites.map(f =>
+                        `- "${f.name}": ProjectID: ${f.projectId}, TaskID: ${f.taskId}`
+                    ).join('\n');
+                    const fence = '\`\`\`';
+
+                    return `You are a Time Recording Assistant. Create time entries for these meetings.
+
+RULES:
+1. Use EXACT meeting name in description
+2. Use EXACT duration (not rounded to 8h)
+3. If PSP element (format: XXXX.XX.XXXX-XX-XX) appears in title, use it as project
+4. Each meeting = one entry on its specific date
 5. Include meeting time (e.g., "09:00-10:30") in description
 
-Generate ONE JSON block with ALL meeting entries:
-\`\`\`json
-{
-  "entries": [
-    {
-      "date": "YYYYMMDD",
-      "projectId": "matched_project_id",
-      "taskId": "matched_task_id", 
-      "hours": exact_meeting_duration,
-      "description": "EXACT meeting title (HH:MM-HH:MM)"
-    }
-  ]
-}
-\`\`\`
-today is the ${
-            context.currentDate
-        }`;
-    },
-    // Build enhanced prompt
-    buildPrompt: function (message, context) {
-        return `You are an intelligent Time Recording Assistant for SAP. You help users efficiently record their work time, 
-            and creatively generate unique time entries for each day => no repetitions / copy paste of texts
-            also choose the correct project and task ids based on the context.
+Available Projects:
+${projectList}
 
-CRITICAL INSTRUCTION: Generate ONLY ONE JSON block per response. Combine all entries into a single JSON structure.
+Priority mappings:
+IN 2911.IN.0072-01..11 = Meetings Tower
+AD 2911.AD.0005-01 = Leadership
+AD 2911.AD.0006-01 = Admin
 
-Current Context:
-- Today: ${
-            context.currentDate
-        }
-- Selected days: ${
-            context.selectedDays.length > 0 ? context.selectedDays.join(', ') : 'none'
-        }
-- Missing time records: ${
-            context.missingDays.length > 0 ? `${
-                context.missingDays.length
-            } days: ${
-                context.missingDays.slice(0, 5).join(', ')
-            }${
-                context.missingDays.length > 5 ? '...' : ''
-            }` : 'none'
-        }
-- Month completion: ${
-            context.monthSummary ?. completionRate || 0
-        }% (${
-            context.monthSummary ?. totalHours || 0
-        }h of ${
-            context.monthSummary ?. requiredHours || 0
-        }h)
-- last weeks time recordings and texts:
-${
-            // get the times from the calender
-            JSON.stringify(TimeRecordingCalendar.getTimes(-1)) || TimeRecordingCalendar.getTimes(-1).join('\n')
-        }
-- this weeks time recordings and texts:
-${
-            // get the times from the calender
-            JSON.stringify(TimeRecordingCalendar.getTimes(0)) || TimeRecordingCalendar.getTimes(0).join('\n')
-        }
-- next weeks time recordings and texts:
-${
-            // get the times from the calender
-            JSON.stringify(TimeRecordingCalendar.getTimes(1)) || TimeRecordingCalendar.getTimes(1).join('\n')
-        }
-User's preferred Projects (MUST use these exact IDs):
-${
-            context.favorites.map(f => `- "${
-                f.name
-            }": ${
-                f.projectDesc
-            } (ProjectID: ${
-                f.projectId
-            }, TaskID: ${
-                f.taskId
-            })`).join('\n')
-        }
+Meeting Data:
+${meetings}
 
+Output ONE JSON block:
+${fence}json
+{"entries":[{"date":"YYYYMMDD","projectId":"id","taskId":"task_id","hours":1.5,"description":"EXACT meeting title (HH:MM-HH:MM)"}]}
+${fence}
+Today: ${context.currentDate}`;
+                },
 
+                // Build generationConfig — conditionally includes thinkingConfig based on model capabilities
+                buildGenerationConfig: function () {
+                    const capabilities = this.getModelCapabilities();
+                    const config = {
+                        temperature: TimeRecordingConfig.ai?.temperature || 0.15,
+                        topK: 40,
+                        topP: 0.95,
+                        maxOutputTokens: Math.min(capabilities.maxOutputTokens || 8192, 1024 * 8)
+                    };
+                    if (capabilities.supportsThinking) {
+                        config.thinkingConfig = { thinkingBudget: 1024 * 8 };
+                    }
+                    return config;
+                },
 
-Instructions:
-1. Understand the user's work description and context from chat history
-2. Match activities to the EXACT ProjectID and TaskID from favorites
-3. Generate ONE SINGLE JSON block with ALL entries
-4. Default to 8 hours per day unless specified
-5. Be intelligent - understand context, patterns, and user preferences
-6. If user mentions multiple projects/tasks for the same day, split the hours appropriately
+                // Main API call with native function calling support
+                callGeminiWithFunctions: async function (message, context, previousError) {
+                    const systemPrompt = this.buildSystemPrompt(context);
+                    const useFunctionCalling = TimeRecordingConfig.ai?.enableFunctionCalling !== false;
 
-IMPORTANT: Output format (ONLY ONE JSON BLOCK):
-\`\`\`json
-{
-  "entries": [
-    {
-      "AccountInd": recordData.accountInd || "10",//default 10 => makes our company money / billable hours, for things like admin use 90
-      "date": "YYYYMMDD",
-      "projectId": "exact_project_id",
-      "taskId": "exact_task_id",
-      "hours": 8.0,
-      "description": "Clear description"
-    }
-  ]
-}
-\`\`\`
-today is the ${
-            context.currentDate
-        }
-Remember: ONLY ONE JSON block, even if creating entries for multiple days or projects.`;
-    },
+                    const userParts = [{ text: message }];
+                    if (previousError) {
+                        userParts.push({ text: '\n[RETRY \u2014 Previous attempt failed: ' + previousError + '. Please fix and try again.]' });
+                    }
 
-    // Call Gemini API
-    callGeminiAPI: async function (message, context) {
-        const prompt = this.buildPrompt(message, context);
+                    const requestBody = {
+                        system_instruction: { parts: { text: systemPrompt } },
+                        contents: [
+                            ...context.chatHistory,
+                            { role: "user", parts: userParts }
+                        ],
+                        generationConfig: this.buildGenerationConfig(),
+                        safetySettings: [
+                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                        ]
+                    };
 
-        const requestBody = {
+                    if (useFunctionCalling) {
+                        requestBody.tools = [{ functionDeclarations: this.getFunctionDeclarations() }];
+                    }
 
-            system_instruction: {
-                parts: {
-                    text: prompt
-                }
-            },
-            contents: [
-                ... context.chatHistory, {
-                    role: "user",
-                    parts: [
-                        {
-                            text: "Current message: "
-                        }, {
-                            text: `Prompt: "${message}"`
+                    const response = await fetch(
+                        this.getEndpoint() + '?key=' + this.apiKey,
+                        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) }
+                    );
+
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({}));
+                        throw new Error(errorData.error?.message || 'API request failed: ' + response.status);
+                    }
+
+                    const data = await response.json();
+
+                    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+                        throw new Error('Invalid response from AI');
+                    }
+
+                    const parts = data.candidates[0].content.parts || [];
+
+                    // Check for function calls
+                    const functionCallPart = parts.find(p => p.functionCall);
+                    if (functionCallPart) {
+                        return await this.handleFunctionCallResponse(functionCallPart.functionCall, message, context, data);
+                    }
+
+                    // Extract text from last text part (skip thinking parts)
+                    const textParts = parts.filter(p => p.text !== undefined);
+                    if (textParts.length === 0) {
+                        throw new Error('No text in AI response');
+                    }
+
+                    return textParts[textParts.length - 1].text;
+                },
+
+                // Handle function call responses from Gemini (supports chaining)
+                handleFunctionCallResponse: async function (functionCall, originalMessage, context, originalData) {
+                    const name = functionCall.name;
+                    const args = functionCall.args || {};
+                    TimeRecordingUtils.log('info', 'AI called function: ' + name, args);
+                    this.logStatus('function', name + '(' + Object.keys(args).join(', ') + ')');
+
+                    const result = await this.executeFunctionByName(name, args);
+
+                    // If askUser, the message was already displayed
+                    if (name === 'askUser') {
+                        this.hideTypingIndicator();
+                        return '__ASKED_USER__';
+                    }
+
+                    // If createTimeEntry, the review dialog was shown — stop the chain
+                    if (name === 'createTimeEntry') {
+                        this.hideTypingIndicator();
+                        return '__CREATED_ENTRIES__';
+                    }
+
+                    // Send function result back to Gemini
+                    const functionResponseBody = {
+                        system_instruction: { parts: { text: this.buildSystemPrompt(context) } },
+                        contents: [
+                            ...context.chatHistory,
+                            { role: "user", parts: [{ text: originalMessage }] },
+                            originalData.candidates[0].content,
+                            {
+                                role: "user",
+                                parts: [{
+                                    functionResponse: {
+                                        name: name,
+                                        response: { result: JSON.stringify(result) }
+                                    }
+                                }]
+                            }
+                        ],
+                        generationConfig: this.buildGenerationConfig(),
+                        safetySettings: [
+                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                        ],
+                        tools: [{ functionDeclarations: this.getFunctionDeclarations() }]
+                    };
+
+                    const followUpResponse = await fetch(
+                        this.getEndpoint() + '?key=' + this.apiKey,
+                        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(functionResponseBody) }
+                    );
+
+                    if (!followUpResponse.ok) {
+                        const errorData = await followUpResponse.json().catch(() => ({}));
+                        throw new Error(errorData.error?.message || 'Follow-up API request failed: ' + followUpResponse.status);
+                    }
+
+                    const followUpData = await followUpResponse.json();
+                    const followUpParts = followUpData.candidates?.[0]?.content?.parts || [];
+
+                    // Check for another function call (chained calls)
+                    const nextFunctionCall = followUpParts.find(p => p.functionCall);
+                    if (nextFunctionCall) {
+                        return await this.handleFunctionCallResponse(nextFunctionCall.functionCall, originalMessage, context, followUpData);
+                    }
+
+                    const textParts = followUpParts.filter(p => p.text !== undefined);
+                    return textParts.length > 0 ? textParts[textParts.length - 1].text : 'I processed the data but have no additional response.';
+                },
+
+                // Process AI response with self-validation
+                processAIResponse: function (response) {
+                    const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/);
+
+                    if (jsonMatch) {
+                        try {
+                            const jsonData = JSON.parse(jsonMatch[1]);
+                            const textBefore = response.substring(0, response.indexOf('```json')).trim();
+                            const textAfter = response.substring(response.indexOf('```', response.indexOf('```json') + 7) + 3).trim();
+
+                            let message = '';
+                            if (textBefore) message += textBefore + '\n\n';
+                            if (textAfter) message += '\n' + textAfter;
+
+                            this.addMessage('model', message || 'Here are the suggested time entries:', jsonData);
+
+                            if (jsonData.entries && jsonData.entries.length > 0) {
+                                // Self-validation
+                                if (TimeRecordingConfig.ai?.enableSelfValidation !== false) {
+                                    const warnings = this.validateEntries(jsonData.entries);
+                                    if (warnings.length > 0) {
+                                        this.addMessage('model', '\u26A0\uFE0F **Validation warnings:**\n' + warnings.join('\n') + '\n\nYou can still import \u2014 or ask me to fix these.');
+                                    }
+                                }
+                                this.showEntryReviewDialog(jsonData.entries);
+                            }
+                        } catch (error) {
+                            TimeRecordingUtils.log('error', 'Failed to parse JSON from AI response', error);
+                            this.addMessage('model', response);
                         }
-                    ]
-                }
-            ],
+                    } else {
+                        this.addMessage('model', response);
+                    }
+                },
 
-            generationConfig: {
-                temperature: 0.4, // this controls randomness of output 0 = deterministic 1 = random
-                topK: 64,
-                topP: 0.95,
-                // t
-                // lots of tokens
-                maxOutputTokens: 1024 * 8,
+                // Self-validate entries before import
+                validateEntries: function (entries) {
+                    const warnings = [];
+                    const favorites = TimeRecordingAPI.getUserFavorites();
+                    const favProjectIds = new Set(favorites.map(f => f.AccProjId));
 
-                thinkingConfig: {
-                    thinkingBudget: 1024 * 8,
-                    // Turn off thinking:
-                    // thinkingBudget: 0
-                    // Turn on dynamic thinking:
-                    // thinkingBudget: -1
-                }
-            },
-            safetySettings: [
-                {
-                    category: "HARM_CATEGORY_HARASSMENT",
-                    threshold: "BLOCK_NONE"
-                }, {
-                    category: "HARM_CATEGORY_HATE_SPEECH",
-                    threshold: "BLOCK_NONE"
-                }, {
-                    category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    threshold: "BLOCK_NONE"
-                }, {
-                    category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    threshold: "BLOCK_NONE"
-                }
+                    // Group by date
+                    const byDate = {};
+                    entries.forEach(e => {
+                        if (!byDate[e.date]) byDate[e.date] = [];
+                        byDate[e.date].push(e);
+                    });
 
-            ]
-        };
+                    for (const date of Object.keys(byDate)) {
+                        const dayEntries = byDate[date];
+                        const totalHours = dayEntries.reduce((sum, e) => sum + (parseFloat(e.hours) || 0), 0);
 
-        const response = await fetch(`${
-            this.apiEndpoint
-        }?key=${
-            this.apiKey
-        }`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-        });
+                        if (Math.abs(totalHours - 8.0) > 0.01) {
+                            warnings.push('\u2022 ' + date + ': Total hours = ' + totalHours.toFixed(2) + 'h (expected 8.0h)');
+                        }
 
-        if (! response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error ?. message || `API request failed: ${
-                response.status
-            }`);
-        }
+                        dayEntries.forEach(e => {
+                            if (e.AccountInd === '90' && parseFloat(e.hours) > 1.0) {
+                                warnings.push('\u2022 ' + date + ': Non-billable entry "' + e.description + '" has ' + e.hours + 'h (max recommended: 0.5h)');
+                            }
+                        });
+                    }
 
-        const data = await response.json();
+                    // Check project IDs
+                    entries.forEach(e => {
+                        if (e.projectId && !favProjectIds.has(e.projectId)) {
+                            const knownPrefixes = ['2911.IN.', '2911.AD.', '2911.TR.'];
+                            const isKnown = knownPrefixes.some(p => e.projectId.startsWith(p));
+                            if (!isKnown) {
+                                warnings.push('\u2022 Unknown project ID: ' + e.projectId + ' (not in favorites)');
+                            }
+                        }
+                    });
 
-        if (! data.candidates || ! data.candidates[0] || ! data.candidates[0].content) {
-            throw new Error('Invalid response from AI');
-        }
+                    // Check for duplicate descriptions
+                    const seen = new Set();
+                    entries.forEach(e => {
+                        const d = (e.description || '').toLowerCase().trim();
+                        if (d && seen.has(d)) {
+                            warnings.push('\u2022 Duplicate description: "' + e.description + '"');
+                        }
+                        seen.add(d);
+                    });
 
-        return data.candidates[0].content.parts[0].text;
-    },
-
-    // Process AI response with entry review
-    processAIResponse: function (response) { // Check if response contains JSON
-        const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/);
-
-        if (jsonMatch) {
-            try {
-                const jsonData = JSON.parse(jsonMatch[1]);
-
-                // Add response message
-                const textBefore = response.substring(0, response.indexOf('```json')).trim();
-                const textAfter = response.substring(response.indexOf('```', response.indexOf('```json') + 7) + 3).trim();
-
-                let message = '';
-                if (textBefore) 
-                    message += textBefore + '\n\n';
-                
-
-
-                if (textAfter) 
-                    message += '\n' + textAfter;
-                
-
-
-                this.addMessage('model', message || 'Here are the suggested time entries:', jsonData);
+                    return warnings;
+                },
 
                 // Show entry review dialog
-                if (jsonData.entries && jsonData.entries.length > 0) {
-                    this.showEntryReviewDialog(jsonData.entries);
-                }
+                showEntryReviewDialog: function (entries) {
+                    const existing = document.getElementById('trEntryReviewDialog');
+                    if (existing) existing.remove();
 
-            } catch (error) {
-                TimeRecordingUtils.log('error', 'Failed to parse JSON from AI response', error);
-                this.addMessage('model', response);
-            }
-        } else {
-            this.addMessage('model', response);
-        }
-    },
+                    const dialog = document.createElement('div');
+                    dialog.id = 'trEntryReviewDialog';
+                    dialog.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);z-index:10001;width:800px;max-height:80vh;display:flex;flex-direction:column;';
 
-    // Show entry review dialog
-    showEntryReviewDialog: function (entries) { // Create review dialog
-        const dialog = document.createElement('div');
-        dialog.id = 'trEntryReviewDialog';
-        dialog.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            z-index: 10001;
-            width: 800px;
-            max-height: 80vh;
-            display: flex;
-            flex-direction: column;
-        `;
+                    dialog.innerHTML = '<div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:20px;color:white;border-radius:12px 12px 0 0;"><h3 style="margin:0;">Review Time Entries</h3><p style="margin:5px 0 0;opacity:0.9;font-size:14px;">\u2705 Select entries to import \u2022 \u270F\uFE0F Click to edit \u2022 \u{1F916} Use input to ask AI changes</p></div><div style="flex:1;overflow-y:auto;padding:20px;"><div id="trEntryList"></div></div><div style="padding:20px;border-top:1px solid #dee2e6;display:flex;gap:10px;justify-content:space-between;"><div style="flex:1;"><input type="text" id="trEntryEditInput" placeholder="Ask AI to modify entries... e.g. \'change project to Platform\'" style="width:100%;padding:10px;border:1px solid #dee2e6;border-radius:6px;"></div><button id="trImportSelected" style="padding:10px 20px;background:#28a745;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">\u2705 Import Selected</button><button id="trCancelReview" style="padding:10px 20px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;">Cancel</button></div>';
 
-        dialog.innerHTML = `
-            <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; color: white; border-radius: 12px 12px 0 0;">
-                <h3 style="margin: 0;">Review Time Entries</h3>
-                <p style="margin: 5px 0 0; opacity: 0.9; font-size: 14px;">Select entries to import or click to edit</p>
-            </div>
-            <div style="flex: 1; overflow-y: auto; padding: 20px;">
-                <div id="trEntryList"></div>
-            </div>
-            <div style="padding: 20px; border-top: 1px solid #dee2e6; display: flex; gap: 10px; justify-content: space-between;">
-                <div style="flex: 1;">
-                    <input type="text" id="trEntryEditInput" placeholder="Ask AI to modify selected entries..." style="width: 100%; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px;">
-                </div>
-                <button id="trImportSelected" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer;">Import Selected</button>
-                <button id="trCancelReview" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer;">Cancel</button>
-            </div>
-        `;
+                    document.body.appendChild(dialog);
 
-        document.body.appendChild(dialog);
+                    const entryList = document.getElementById('trEntryList');
+                    entries.forEach((entry, index) => {
+                        const entryDiv = document.createElement('div');
+                        entryDiv.style.cssText = 'padding:15px;margin-bottom:10px;border:2px solid #dee2e6;border-radius:8px;cursor:pointer;transition:all 0.2s;';
 
-        // Render entries
-        const entryList = document.getElementById('trEntryList');
-        entries.forEach((entry, index) => {
-            const entryDiv = document.createElement('div');
-            entryDiv.style.cssText = `
-                padding: 15px;
-                margin-bottom: 10px;
-                border: 2px solid #dee2e6;
-                border-radius: 8px;
-                cursor: pointer;
-                transition: all 0.2s;
-            `;
+                        const dateFormatted = entry.date.substr(6, 2) + '.' + entry.date.substr(4, 2) + '.' + entry.date.substr(0, 4);
+                        const billableIcon = entry.AccountInd === '90' ? '\u{1F537}' : '\u{1F7E2}';
 
-            const dateFormatted = `${
-                entry.date.substr(6, 2)
-            }.${
-                entry.date.substr(4, 2)
-            }.${
-                entry.date.substr(0, 4)
-            }`;
+                        entryDiv.innerHTML = '<div style="display:flex;align-items:center;gap:15px;"><input type="checkbox" checked data-index="' + index + '" style="width:20px;height:20px;cursor:pointer;"><div style="flex:1;"><div style="font-weight:bold;margin-bottom:5px;">\u{1F4C5} ' + dateFormatted + ' \u2014 ' + entry.hours + 'h ' + billableIcon + '</div><div style="color:#666;font-size:14px;margin-bottom:3px;">\u{1F4C1} ' + entry.projectId + ' / ' + entry.taskId + '</div><div style="color:#333;">\u{1F4DD} ' + entry.description + '</div></div></div>';
 
-            entryDiv.innerHTML = `
-                <div style="display: flex; align-items: center; gap: 15px;">
-                    <input type="checkbox" checked data-index="${index}" style="width: 20px; height: 20px; cursor: pointer;">
-                    <div style="flex: 1;">
-                        <div style="font-weight: bold; margin-bottom: 5px;">📅 ${dateFormatted} - ${
-                entry.hours
-            }h</div>
-                        <div style="color: #666; font-size: 14px; margin-bottom: 3px;">📁 ${
-                entry.projectId
-            } / ${
-                entry.taskId
-            }</div>
-                        <div style="color: #333;">📝 ${
-                entry.description
-            }</div>
-                    </div>
-                </div>
-            `;
+                        entryList.appendChild(entryDiv);
 
-            entryList.appendChild(entryDiv);
+                        entryDiv.onclick = (e) => {
+                            if (e.target.type !== 'checkbox') {
+                                const input = document.getElementById('trEntryEditInput');
+                                input.value = 'Change entry ' + (index + 1) + ' (' + dateFormatted + '): ';
+                                input.focus();
+                            }
+                        };
+                    });
 
-            // Click to edit
-            entryDiv.onclick = (e) => {
-                if (e.target.type !== 'checkbox') {
-                    const input = document.getElementById('trEntryEditInput');
-                    input.value = `Change entry ${
-                        index + 1
-                    } to: `;
-                    input.focus();
+                    document.getElementById('trImportSelected').onclick = () => {
+                        const selected = [];
+                        document.querySelectorAll('#trEntryList input[type="checkbox"]:checked').forEach(cb => {
+                            selected.push(entries[parseInt(cb.dataset.index)]);
+                        });
+                        if (selected.length > 0) {
+                            this.importTimeEntries(selected);
+                            dialog.remove();
+                        } else {
+                            alert('Please select at least one entry to import');
+                        }
+                    };
+
+                    document.getElementById('trCancelReview').onclick = () => dialog.remove();
+
+                    document.getElementById('trEntryEditInput').onkeypress = async (e) => {
+                        if (e.key === 'Enter' && e.target.value.trim()) {
+                            const msg = e.target.value.trim();
+                            dialog.remove();
+                            await this.sendMessage(msg);
+                        }
+                    };
+                },
+
+                // Import time entries with smart error recovery
+                importTimeEntries: async function (entries) {
+                    console.log('Importing time entries from AI:', entries);
+
+                    const validEntries = entries.filter(entry =>
+                        entry.date && entry.projectId && entry.hours && entry.description
+                    );
+
+                    if (validEntries.length === 0) {
+                        alert('No valid entries to import');
+                        return;
+                    }
+
+                    const error = await TimeRecordingUI.recordTimeEntries(validEntries);
+
+                    if (error) {
+                        this.addMessage('model', '\u26A0\uFE0F Some entries failed. Asking AI to auto-correct...');
+                        this.sendMessage('Errors occurred during import. Please fix and regenerate ONLY the failed entries:\n\nErrors:\n' + error.map(err => err.date + ': ' + err.error).join('\n') + '\n\nOriginal entries:\n' + JSON.stringify(validEntries, null, 2) + '\n\nFix the issues and output corrected entries.');
+                        return;
+                    }
+
+                    this.addMessage('model', '\u2705 Successfully imported ' + validEntries.length + ' time ' + (validEntries.length === 1 ? 'entry' : 'entries') + '! Calendar is refreshing...');
+                },
+
+                // Switch AI model
+                switchModel: function (modelKey) {
+                    const discovered = this.discoveredModels.find(m => m.id === modelKey);
+                    if (discovered) {
+                        TimeRecordingConfig.ai.model = modelKey;
+                        const caps = [];
+                        if (discovered.supportsThinking) caps.push('thinking');
+                        if (discovered.supportsFunctionCalling) caps.push('function calling');
+                        const capsStr = caps.length > 0 ? ' | Supports: ' + caps.join(', ') : '';
+                        this.addMessage('model', '\u{1F504} Switched to **' + discovered.displayName + '**' + capsStr);
+                        this.updateModelDropdown();
+                    } else {
+                        const available = this.discoveredModels.map(m => m.displayName).join(', ');
+                        this.addMessage('model', '\u274C Unknown model: ' + modelKey + '. Available: ' + (available || 'none discovered'));
+                    }
+                },
+
+                // Add message to chat with markdown rendering
+                addMessage: function (sender, content, data) {
+                    data = data || null;
+                    const container = document.getElementById('trAIChatMessages');
+                    if (!container) return;
+
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'tr-ai-message tr-ai-message-' + sender;
+                    messageDiv.style.marginBottom = '10px';
+
+                    let displayContent = content;
+                    displayContent = displayContent.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                    displayContent = displayContent.replace(/_([^_]+)_/g, '<em>$1</em>');
+                    if (!displayContent.includes('<pre')) {
+                        displayContent = displayContent.replace(/\n/g, '<br>');
+                    }
+
+                    messageDiv.innerHTML = '<div style="font-size:11px;color:#666;margin-bottom:5px;font-weight:bold;">' + (sender === 'user' ? '\u{1F464} You' : '\u{1F916} AI (' + this.getModelName() + ')') + '</div><div style="font-size:13px;line-height:1.5;">' + displayContent + '</div>';
+
+                    container.appendChild(messageDiv);
+
+                    this.conversationHistory.push({ sender: sender, content: content, data: data, timestamp: new Date() });
+                    if (this.conversationHistory.length > this.maxHistoryLength) {
+                        this.conversationHistory = this.conversationHistory.slice(-this.maxHistoryLength);
+                    }
+
+                    container.scrollTop = container.scrollHeight;
+                },
+
+                showTypingIndicator: function () {
+                    const container = document.getElementById('trAIChatMessages');
+                    if (!container) return;
+                    const indicator = document.createElement('div');
+                    indicator.id = 'trAITypingIndicator';
+                    indicator.className = 'tr-ai-message tr-ai-message-assistant';
+                    indicator.style.marginBottom = '10px';
+                    indicator.innerHTML = '<div style="color:#666;font-style:italic;">\u{1F916} AI is thinking (' + this.getModelName() + ')...</div>';
+                    container.appendChild(indicator);
+                    container.scrollTop = container.scrollHeight;
+                },
+
+                hideTypingIndicator: function () {
+                    const indicator = document.getElementById('trAITypingIndicator');
+                    if (indicator) indicator.remove();
+                },
+
+                clearChat: function () {
+                    const container = document.getElementById('trAIChatMessages');
+                    if (container) container.innerHTML = '';
+                    this.conversationHistory = [];
+                    this.initializeChat();
+                },
+
+                exportConversation: function () {
+                    return this.conversationHistory;
                 }
             };
-        });
-
-        // Event handlers
-        document.getElementById('trImportSelected').onclick = () => {
-            const selected = [];
-            document.querySelectorAll('#trEntryList input[type="checkbox"]:checked').forEach(cb => {
-                selected.push(entries[parseInt(cb.dataset.index)]);
-            });
-
-            if (selected.length > 0) {
-                this.importTimeEntries(selected);
-                dialog.remove();
-            } else {
-                alert('Please select at least one entry to import');
-            }
-        };
-
-        document.getElementById('trCancelReview').onclick = () => {
-            dialog.remove();
-        };
-
-        document.getElementById('trEntryEditInput').onkeypress = async (e) => {
-            if (e.key === 'Enter' && e.target.value.trim()) {
-                const message = e.target.value.trim();
-                dialog.remove();
-                await this.sendMessage(message);
-            }
-        };
-    },
-
-    // Import time entries
-    importTimeEntries: async function (entries) {
-        console.log('Importing time entries from AI:', entries);
-
-        // Validate entries
-        const validEntries = entries.filter(entry => {
-            return entry.date && entry.projectId && entry.hours && entry.description;
-        });
-
-        if (validEntries.length === 0) {
-            alert('No valid entries to import');
-            return;
-        }
-
-        // Call the recording function
-        const error = await TimeRecordingUI.recordTimeEntries(validEntries);
-        //when error, => task ai to fix it 
-        if (error) {
-            
-            this.sendMessage(`one or more Errors occured, please try again. Errors: ${error.map(err => 
-                `${err.date}: ${err.error}`
-            ).join('\n')}
-            Entries: ${JSON.stringify(validEntries)}
-            `);
-
-            return;
-        }
-        this.addMessage('model', `✅ Successfully prepared ${
-            validEntries.length
-        } time ${
-            validEntries.length === 1 ? 'entry' : 'entries'
-        } for import`);
-    },
-
-    // Add message to chat
-    addMessage: function (sender, content, data = null) {
-        const container = document.getElementById('trAIChatMessages');
-        if (! container) 
-            return;
-        
-
-
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `tr-ai-message tr-ai-message-${sender}`;
-        messageDiv.style.marginBottom = '10px';
-
-        // Process content for display
-        let displayContent = content;
-        if (! displayContent.includes('<pre')) {
-            displayContent = displayContent.replace(/\n/g, '<br>');
-        }
-
-        messageDiv.innerHTML = `
-            <div style="font-size: 11px; color: #666; margin-bottom: 5px; font-weight: bold;">
-                ${
-            sender === 'user' ? '👤 You' : '🤖 AI Assistant'
-        }
-            </div>
-            <div style="font-size: 13px; line-height: 1.5;">${displayContent}</div>
-        `;
-
-        container.appendChild(messageDiv);
-
-        // Store in history
-        this.conversationHistory.push({sender: sender, content: content, data: data, timestamp: new Date()});
-
-        // Trim history if too long
-        if (this.conversationHistory.length > this.maxHistoryLength) {
-            this.conversationHistory = this.conversationHistory.slice(-this.maxHistoryLength);
-        }
-
-        // Scroll to bottom
-        container.scrollTop = container.scrollHeight;
-    },
-
-    // Show typing indicator
-    showTypingIndicator: function () {
-        const container = document.getElementById('trAIChatMessages');
-        if (! container) 
-            return;
-        
-
-
-        const indicator = document.createElement('div');
-        indicator.id = 'trAITypingIndicator';
-        indicator.className = 'tr-ai-message tr-ai-message-assistant';
-        indicator.style.marginBottom = '10px';
-        indicator.innerHTML = '<div style="color: #666; font-style: italic;">🤖 AI is thinking...</div>';
-
-        container.appendChild(indicator);
-        container.scrollTop = container.scrollHeight;
-    },
-
-    // Hide typing indicator
-    hideTypingIndicator: function () {
-        const indicator = document.getElementById('trAITypingIndicator');
-        if (indicator) 
-            indicator.remove();
-        
-
-
-    },
-
-    // Clear chat history
-    clearChat: function () {
-        const container = document.getElementById('trAIChatMessages');
-        if (container) {
-            container.innerHTML = '';
-        }
-        this.conversationHistory = [];
-        this.initializeChat();
-    },
-
-    // Export conversation
-    exportConversation: function () {
-        return this.conversationHistory;
-    }
-};
-// Time Recording Calendar - API Service Module (UPDATED with real SAP API)
 window.TimeRecordingAPI = {
     csrfToken: null,
     holidays: {},
@@ -1268,47 +2221,156 @@ createTimeRecord: async function(recordData) {
     getHolidayInfo: function(date) {
         const dateStr = date.toISOString().split('T')[0];
         return this.holidays[dateStr] || null;
+    },
+
+    // Fetch historical records for N months (for AI context)
+    // Reuses fetchMonthRecords (the same per-day approach the calendar uses)
+    fetchHistoricalRecords: async function(months) {
+        const now = new Date();
+        
+        TimeRecordingUtils.log('info', `Loading ${months} months of historical records using monthly fetch...`);
+        
+        try {
+            const allRecords = [];
+            
+            // Walk backwards month by month, waiting for each to finish
+            for (let i = 0; i < months; i++) {
+                const targetDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                const year = targetDate.getFullYear();
+                const month = targetDate.getMonth();
+                const label = `${month + 1}/${year}`;
+                
+                try {
+                    TimeRecordingUtils.log('info', `  Fetching month ${i + 1}/${months}: ${label}...`);
+                    const monthRecords = await this.fetchMonthRecords(year, month);
+                    
+                    // Flatten the {dateKey: [records]} map into a flat array
+                    let monthCount = 0;
+                    for (const dayRecords of Object.values(monthRecords)) {
+                        if (dayRecords && dayRecords.length > 0) {
+                            allRecords.push(...dayRecords);
+                            monthCount += dayRecords.length;
+                        }
+                    }
+                    TimeRecordingUtils.log('info', `  Month ${label}: ${monthCount} records`);
+                } catch (monthError) {
+                    TimeRecordingUtils.log('warning', `  Month ${label} failed: ${monthError.message}`);
+                }
+            }
+            
+            TimeRecordingUtils.log('info', `✅ Loaded ${allRecords.length} historical records over ${months} months`);
+            return allRecords;
+            
+        } catch (error) {
+            TimeRecordingUtils.log('error', 'Failed to fetch historical records:', error);
+            return [];
+        }
+    },
+
+    // Summarize historical records for AI context (reduce token usage)
+    summarizeHistoricalRecords: function(records) {
+        if (!records || records.length === 0) return null;
+        
+        const projectHours = {};
+        const monthlyBreakdown = {};
+        const descriptions = {};
+        
+        records.forEach(record => {
+            const hours = parseFloat(record.Duration) || 0;
+            const projKey = `${record.AccProjId || 'unknown'}|${record.AccTaskPspId || ''}`;
+            const month = record.RecordDate ? record.RecordDate.substring(0, 6) : 'unknown';
+            const desc = record.Content || '';
+            
+            // Aggregate hours per project
+            if (!projectHours[projKey]) {
+                projectHours[projKey] = { 
+                    totalHours: 0, 
+                    count: 0, 
+                    projectId: record.AccProjId,
+                    taskId: record.AccTaskPspId,
+                    projectDesc: record.AccProjDesc || '',
+                    taskDesc: record.AccTaskPspDesc || '',
+                    accountInd: record.AccountInd || '10'
+                };
+            }
+            projectHours[projKey].totalHours += hours;
+            projectHours[projKey].count += 1;
+            
+            // Monthly breakdown
+            if (!monthlyBreakdown[month]) {
+                monthlyBreakdown[month] = { totalHours: 0, entries: 0 };
+            }
+            monthlyBreakdown[month].totalHours += hours;
+            monthlyBreakdown[month].entries += 1;
+            
+            // Collect unique description patterns per project
+            if (desc && desc.length > 3) {
+                if (!descriptions[projKey]) descriptions[projKey] = new Set();
+                if (descriptions[projKey].size < 5) {
+                    descriptions[projKey].add(desc.substring(0, 100));
+                }
+            }
+        });
+        
+        // Sort projects by total hours
+        const topProjects = Object.entries(projectHours)
+            .sort((a, b) => b[1].totalHours - a[1].totalHours)
+            .slice(0, 20)
+            .map(([key, data]) => ({
+                ...data,
+                avgHoursPerEntry: (data.totalHours / data.count).toFixed(2),
+                sampleDescriptions: descriptions[key] ? Array.from(descriptions[key]) : []
+            }));
+        
+        return {
+            totalRecords: records.length,
+            periodStart: records.reduce((min, r) => r.RecordDate < min ? r.RecordDate : min, records[0].RecordDate),
+            periodEnd: records.reduce((max, r) => r.RecordDate > max ? r.RecordDate : max, records[0].RecordDate),
+            topProjects: topProjects,
+            monthlyBreakdown: monthlyBreakdown,
+            totalHours: Object.values(projectHours).reduce((sum, p) => sum + p.totalHours, 0).toFixed(1)
+        };
     }
 };
-// Time Recording Calendar - Calendar Core Module (UPDATED)
-
 window.TimeRecordingCalendar = {
     currentMonth: new Date().getMonth(),
     currentYear: new Date().getFullYear(),
     monthData: {},
-    
+
     // Initialize calendar
-    init: async function() {
+    init: async function () {
         this.currentMonth = new Date().getMonth();
         this.currentYear = new Date().getFullYear();
-        
+
         await this.loadCurrentMonth();
         return true;
     },
-    
+
     // Load data for current month
-    loadCurrentMonth: async function() {
+    loadCurrentMonth: async function () {
         const year = this.currentYear;
         const month = this.currentMonth;
-        
-        TimeRecordingUtils.log('info', `Loading calendar for ${month + 1}/${year}`);
-        
+
+        TimeRecordingUtils.log('info', `Loading calendar for ${
+            month + 1
+        }/${year}`);
+
         // Fetch time records
         const records = await TimeRecordingAPI.fetchMonthRecords(year, month);
-        
+
         // Build month data
         this.monthData = this.buildMonthData(year, month, records);
-        
+
         // Update UI
         if (window.TimeRecordingUI) {
             window.TimeRecordingUI.renderCalendar(this.monthData);
         }
-        
+
         return this.monthData;
     },
-    
+
     // Build month data structure (UPDATED to include all days)
-    buildMonthData: function(year, month, records) {
+    buildMonthData: function (year, month, records) {
         const data = {
             year: year,
             month: month,
@@ -1318,57 +2380,58 @@ window.TimeRecordingCalendar = {
             requiredHours: 0,
             completionRate: 0
         };
-        
+
         const firstDay = new Date(year, month, 1);
         const lastDay = new Date(year, month + 1, 0);
-        
+
         // Start from the beginning of the week
         const startDate = new Date(firstDay);
         const firstDayOfWeek = startDate.getDay() || 7; // Convert Sunday (0) to 7
-        startDate.setDate(startDate.getDate() - firstDayOfWeek + 1); // Start from Monday
-        
+        startDate.setDate(startDate.getDate() - firstDayOfWeek + 1);
+        // Start from Monday
+
         // End at the end of the week
         const endDate = new Date(lastDay);
         const lastDayOfWeek = endDate.getDay() || 7;
         if (lastDayOfWeek < 7) {
             endDate.setDate(endDate.getDate() + (7 - lastDayOfWeek));
         }
-        
+
         // Build day data for ALL days (including weekends)
         const current = new Date(startDate);
         while (current <= endDate) {
             const dayData = this.buildDayData(current, records);
             data.days.push(dayData);
-            
+
             // Count totals for current month only (excluding weekends)
-            if (current.getMonth() === month && !dayData.isWeekend) {
-                if (dayData.isWorkDay && !dayData.isHoliday && !dayData.isFuture) {
+            if (current.getMonth() === month && ! dayData.isWeekend) {
+                if (dayData.isWorkDay && ! dayData.isHoliday && ! dayData.isFuture) {
                     data.requiredHours += TimeRecordingConfig.calendar.dailyQuota;
                     data.totalHours += dayData.totalHours;
                 }
             }
-            
+
             current.setDate(current.getDate() + 1);
         }
-        
+
         // Calculate completion rate
         if (data.requiredHours > 0) {
             data.completionRate = Math.round((data.totalHours / data.requiredHours) * 100);
         }
-        
+
         return data;
     },
-    
+
     // Build data for a single day (UPDATED)
-    buildDayData: function(date, records) {
+    buildDayData: function (date, records) {
         const dateKey = TimeRecordingUtils.formatDate(date);
         const dayRecords = records[dateKey] || [];
-        
+
         const dayData = {
             date: new Date(date),
             dateKey: dateKey,
             displayDate: date.getDate(),
-            dayName: date.toLocaleDateString('en-US', { weekday: 'short' }),
+            dayName: date.toLocaleDateString('en-US', {weekday: 'short'}),
             isCurrentMonth: date.getMonth() === this.currentMonth,
             isWeekend: TimeRecordingUtils.isWeekend(date),
             isToday: TimeRecordingUtils.isToday(date),
@@ -1381,15 +2444,15 @@ window.TimeRecordingCalendar = {
             status: 'none',
             color: ''
         };
-        
+
         // Determine if it's a work day (excluding weekends)
-        dayData.isWorkDay = !dayData.isWeekend && dayData.isCurrentMonth;
-        
+        dayData.isWorkDay = ! dayData.isWeekend && dayData.isCurrentMonth;
+
         // Calculate total hours
         dayData.totalHours = TimeRecordingUtils.calculateTotalHours(dayRecords);
-        
+
         // Determine status and color
-        if (!dayData.isCurrentMonth) {
+        if (! dayData.isCurrentMonth) {
             dayData.status = 'other-month';
             dayData.color = TimeRecordingConfig.ui.colors.weekend;
         } else if (dayData.isWeekend) {
@@ -1411,63 +2474,107 @@ window.TimeRecordingCalendar = {
             dayData.status = 'missing';
             dayData.color = TimeRecordingConfig.ui.colors.missing;
         }
-        
+
         return dayData;
     },
-    
+
     // Navigate to previous month
-    previousMonth: async function() {
-        this.currentMonth--;
+    previousMonth: async function () {
+        this.currentMonth --;
         if (this.currentMonth < 0) {
             this.currentMonth = 11;
-            this.currentYear--;
+            this.currentYear --;
         }
         await this.loadCurrentMonth();
     },
-    
+
     // Navigate to next month
-    nextMonth: async function() {
-        this.currentMonth++;
+    nextMonth: async function () {
+        this.currentMonth ++;
         if (this.currentMonth > 11) {
             this.currentMonth = 0;
-            this.currentYear++;
+            this.currentYear ++;
         }
         await this.loadCurrentMonth();
     },
-    
+
     // Navigate to today
-    goToToday: async function() {
+    goToToday: async function () {
         const today = new Date();
         this.currentMonth = today.getMonth();
         this.currentYear = today.getFullYear();
         await this.loadCurrentMonth();
     },
-    
+
     // Refresh current month
-    refresh: async function() {
+    refresh: async function () {
         TimeRecordingUtils.log('info', 'Refreshing calendar data...');
         await this.loadCurrentMonth();
     },
-    
+
     // Get current month data
-    getCurrentMonthData: function() {
+    getCurrentMonthData: function () {
         return this.monthData;
     },
     // based on the week number ( when 0 = current week , 1 = next week , -1 = last week )
     // return all recorded times of that week as an json array
     // use the calenders data and if not loaded then load more.
-    getTimes(relativeWeek) {
-        const weekNumber = TimeRecordingUtils.getWeekNumber(new Date()) + relativeWeek;
+    getTimes(relativeWeek = 0, dateRange = null, surroundingWeeks = false) { // Helper: normalize a date input (string YYYYMMDD or Date)
+        const parseDate = (d) => {
+            if (d instanceof Date) 
+                return new Date(d);
+             // clone Date object
+            if (typeof d === "string") {
+                return new Date(d.slice(0, 4), // year
+                    d.slice(4, 6) - 1, // month (0-based)
+                    d.slice(6, 8) // day
+                );
+            }
+            throw new Error("Invalid date type; expected 'YYYYMMDD' string or Date");
+        };
+
+        // ------------------------------------------
+        // DATE RANGE MODE
+        // ------------------------------------------
+        if (Array.isArray(dateRange) && dateRange.length > 0) { // Parse first date
+            const start = parseDate(dateRange[0]);
+
+            // Parse second date, or use same if only one provided
+            const end = dateRange.length > 1 ? parseDate(dateRange[1]) : new Date(start);
+
+            // Expand by 1 week before & after if requested
+            if (surroundingWeeks) {
+                start.setDate(start.getDate() - 7);
+                end.setDate(end.getDate() + 7);
+            }
+
+            const records = this.monthData.days.filter(record => {
+                const d = new Date(record.date);
+                return d >= start && d <= end;
+            });
+
+            return JSON.stringify(records);
+        }
+
+        // ------------------------------------------
+        // RELATIVE WEEK MODE (default)
+        // ------------------------------------------
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() + relativeWeek * 7);
+
+        const targetWeek = TimeRecordingUtils.getWeekNumber(targetDate);
+        const targetYear = targetDate.getFullYear();
+
         const records = this.monthData.days.filter(record => {
-            const recordWeekNumber = TimeRecordingUtils.getWeekNumber(new Date(record.date));
-            return recordWeekNumber === weekNumber;
+            const d = new Date(record.date);
+            return(TimeRecordingUtils.getWeekNumber(d) === targetWeek && d.getFullYear() === targetYear);
         });
+
         return JSON.stringify(records);
-    },
+    }
 
 
 };
-// Time Recording Calendar - Configuration Module
 window.TimeRecordingConfig = {
     // SAP Configuration
     sap: {
@@ -1493,6 +2600,31 @@ window.TimeRecordingConfig = {
         year: new Date().getFullYear()
     },
     
+    // AI Configuration
+    ai: {
+        // Model selection — populated dynamically via ListModels API
+        // Falls back to 'gemini-2.5-flash' if discovery fails
+        model: 'gemini-2.5-flash',
+        apiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        // Fallback models used only if ListModels API fails
+        fallbackModels: {
+            'gemini-2.5-flash': { name: 'Gemini 2.5 Flash', description: 'Fast & cost-effective' },
+            'gemini-2.5-pro': { name: 'Gemini 2.5 Pro', description: 'Deep reasoning' }
+        },
+        temperature: 0.15,            // Low temp for deterministic JSON output (was 0.4 — too random)
+        maxRetries: 3,                // Auto-retry on API errors or invalid JSON
+        retryDelayMs: 1500,           // Delay between retries
+        confidenceThreshold: 0.8,     // Below this, AI asks the user instead of guessing
+        defaultHistoryMonths: 12,     // Default months of history to load
+        maxNonBillableHoursPerDay: 0.5, // Admin/non-billable max ~30 min/day
+        typicalBillableHoursPerDay: 7.5, // Typical development/billable hours
+        maxClipboardLength: 50000,    // Max clipboard text length to process
+        maxFileContextLength: 100000, // Max file context length
+        enableFunctionCalling: true,  // Use native Gemini function calling
+        enableProactiveSuggestions: true, // AI proactively suggests filling missing days
+        enableSelfValidation: true,   // Validate entries before showing review dialog
+    },
+
     // UI Configuration
     ui: {
         colors: {
@@ -1508,7 +2640,6 @@ window.TimeRecordingConfig = {
         autoRefresh: 300000 // Refresh every 5 minutes
     }
 };
-// Time Recording Calendar - Drag & Drop Module
 window.TimeRecordingDrag = {
     draggedElement: null,
     dragOffset: { x: 0, y: 0 },
@@ -1518,6 +2649,9 @@ window.TimeRecordingDrag = {
     init: function() {
         // Load saved layouts
         this.loadLayouts();
+        
+        // Initialize global mouse event handlers for dragging
+        this.initGlobalDragEvents();
         
         // Make main panels draggable
         this.makeDraggable(document.getElementById('trMainView'));
@@ -1547,7 +2681,9 @@ window.TimeRecordingDrag = {
         handle.style.cursor = 'move';
         
         handle.addEventListener('mousedown', (e) => {
-            if (e.target.tagName === 'BUTTON') return; // Don't drag on buttons
+            // Don't drag on interactive elements (buttons, dropdowns, inputs)
+            const tag = e.target.tagName;
+            if (tag === 'BUTTON' || tag === 'SELECT' || tag === 'OPTION' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'LABEL') return;
             
             this.draggedElement = element;
             this.dragOffset.x = e.clientX - element.offsetLeft;
@@ -1799,12 +2935,6 @@ window.TimeRecordingDrag = {
         location.reload();
     }
 };
-
-// Initialize drag events when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    TimeRecordingDrag.initGlobalDragEvents();
-});
-// Time Recording Calendar - Edit Module (FIXED)
 window.TimeRecordingEdit = {
     currentRecord: null,
     editDialog: null,
@@ -2363,7 +3493,6 @@ window.TimeRecordingEdit = {
         return statusMap[status] || 'Unknown';
     }
 };
-// Time Recording Calendar - ICS Import Module
 window.TimeRecordingICS = {
     meetings: [],
     selectedMeetings: new Set(),
@@ -2867,26 +3996,6 @@ Please generate time entries for all these meetings.`;
 document.getElementById('trImportICS').onclick = () => {
     TimeRecordingICS.showImportDialog();
 };
-
-// Add pulse animation to styles
-const style = document.createElement('style');
-style.textContent += `
-    @keyframes pulse {
-        0% {
-            box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.7);
-        }
-        70% {
-            box-shadow: 0 0 0 10px rgba(102, 126, 234, 0);
-        }
-        100% {
-            box-shadow: 0 0 0 0 rgba(102, 126, 234, 0);
-        }
-    }
-`;
-document.head.appendChild(style);
-/* eslint-disable no-unused-vars */
-/* eslint-disable no-undef */
-// Time Recording Calendar - UI Module (ENHANCED with Excel-like selection)
 window.TimeRecordingUI = {
     container: null,
     minimized: false,
@@ -2927,15 +4036,31 @@ window.TimeRecordingUI = {
                     <!-- AI Chat Panel -->
                     <div id="trAIPanel" style="background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); width: 400px; max-height: 90vh; display: none; flex-direction: column;">
                         <div style="background: linear-gradient(135deg, #764ba2, #667eea); padding: 15px; color: white; border-radius: 12px 12px 0 0;">
-                            <h3 style="margin: 0; font-size: 16px;">🤖 AI Assistant</h3>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <h3 style="margin: 0; font-size: 16px;">🤖 AI Assistant</h3>
+                                <div style="display: flex; gap: 6px;">
+                                    <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
+                                    <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
+                                    <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
+                                    <button id="trAIApiKey" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Set/change API key">🔑</button>
+                                    <button id="trAIStatusBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Open AI status/debug window">🔬</button>
+                                </div>
+                            </div>
+                            <div style="padding: 6px 15px 0; display: flex; align-items: center; gap: 6px;">
+                                <label style="color: rgba(255,255,255,0.8); font-size: 11px; white-space: nowrap;">Model:</label>
+                                <select id="trAIModelSelect" style="flex: 1; background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 3px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; max-width: 260px;">
+                    <option value="" style="color: #333; background: white;">Loading models...</option>
+                                </select>
+                            </div>
                         </div>
+                        <input type="file" id="trAIFileInput" style="display: none;" accept=".txt,.csv,.json,.md,.log,.xml">
                         <div id="trAIChatContainer" style="flex: 1; overflow-y: auto; padding: 15px; max-height: 500px;">
                             <div id="trAIChatMessages" style="display: flex; flex-direction: column; gap: 10px;">
                                 <!-- Chat messages will appear here -->
                             </div>
                         </div>
                         <div style="padding: 15px; border-top: 1px solid #dee2e6;">
-                            <textarea id="trAIInput" placeholder="Describe what you worked on..." style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px; resize: vertical;"></textarea>
+                            <textarea id="trAIInput" placeholder="Describe what you worked on... e.g. 'I worked on the tower application refactoring on Monday'" style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #dee2e6; border-radius: 6px; resize: vertical;"></textarea>
                             <div style="display: flex; gap: 10px; margin-top: 10px;">
                                 <button id="trAISend" style="flex: 1; padding: 10px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">Send</button>
                                 <button id="trAIClear" style="padding: 10px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear</button>
@@ -2955,6 +4080,20 @@ window.TimeRecordingUI = {
                         <div id="trDayDetailsActions" style="padding: 15px; border-top: 1px solid #dee2e6; display: none;">
                             <button id="trEditDay" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; margin-bottom: 10px;">Edit Records</button>
                             <button id="trAddToSelection" style="width: 100%; padding: 10px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">Add to Selection</button>
+                        </div>
+                    </div>
+                    
+                    <!-- AI Status/Debug Popup -->
+                    <div id="trAIStatusPopup" style="background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); width: 380px; max-height: 70vh; display: none; flex-direction: column; position: fixed; bottom: 20px; left: 20px; z-index: 10001;">
+                        <div style="background: linear-gradient(135deg, #495057, #343a40); padding: 12px 15px; color: white; border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center;">
+                            <h3 style="margin: 0; font-size: 14px;">🔬 AI Status &amp; Debug</h3>
+                            <div style="display: flex; gap: 6px;">
+                                <button id="trAIStatusClear" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;" title="Clear log">🗑️</button>
+                                <button id="trAIStatusClose" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">✕</button>
+                            </div>
+                        </div>
+                        <div id="trAIStatusLog" style="flex: 1; overflow-y: auto; padding: 10px; max-height: 50vh; font-size: 11px; font-family: monospace; background: #fafafa;">
+                            <div style="color: #999; font-style: italic;">AI status log — function calls, thinking, and highlights will appear here.</div>
                         </div>
                     </div>
                     
@@ -3755,6 +4894,108 @@ window.TimeRecordingUI = {
             };
         }
 
+        // Load History button
+        if (document.getElementById('trAILoadHistory')) {
+            document.getElementById('trAILoadHistory').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    const defaultMonths = TimeRecordingConfig.ai?.defaultHistoryMonths || 12;
+                    const months = prompt(`How many months of historical records should I load?\n(More months = better context but slower loading)`, defaultMonths);
+                    if (months && !isNaN(parseInt(months))) {
+                        TimeRecordingAI.loadHistoricalRecords(parseInt(months));
+                    }
+                }
+            };
+        }
+
+        // Upload File button
+        if (document.getElementById('trAIUploadFile')) {
+            document.getElementById('trAIUploadFile').onclick = () => {
+                document.getElementById('trAIFileInput')?.click();
+            };
+        }
+
+        // File input change handler
+        if (document.getElementById('trAIFileInput')) {
+            document.getElementById('trAIFileInput').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file && window.TimeRecordingAI) {
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        TimeRecordingAI.processFileUpload(evt.target.result, file.name);
+                    };
+                    reader.onerror = () => {
+                        TimeRecordingAI.addMessage('model', '❌ Failed to read file. Please try again.');
+                    };
+                    reader.readAsText(file);
+                }
+                // Reset so the same file can be uploaded again
+                e.target.value = '';
+            };
+        }
+
+        // Paste Clipboard button
+        if (document.getElementById('trAIPasteClipboard')) {
+            document.getElementById('trAIPasteClipboard').onclick = async () => {
+                if (window.TimeRecordingAI) {
+                    try {
+                        const clipboardText = await navigator.clipboard.readText();
+                        if (clipboardText && clipboardText.trim()) {
+                            TimeRecordingAI.processClipboardContent(clipboardText);
+                        } else {
+                            TimeRecordingAI.addMessage('model', '📋 Clipboard is empty. Copy some text first and try again.');
+                        }
+                    } catch (err) {
+                        // Fallback: prompt user to paste manually
+                        const manualPaste = prompt('Could not access clipboard directly. Please paste your clipboard content here:');
+                        if (manualPaste && manualPaste.trim()) {
+                            TimeRecordingAI.processClipboardContent(manualPaste);
+                        }
+                    }
+                }
+            };
+        }
+
+        // Model dropdown
+        if (document.getElementById('trAIModelSelect')) {
+            document.getElementById('trAIModelSelect').onchange = (e) => {
+                if (window.TimeRecordingAI && e.target.value) {
+                    TimeRecordingAI.switchModel(e.target.value);
+                }
+            };
+        }
+
+        // API Key button
+        if (document.getElementById('trAIApiKey')) {
+            document.getElementById('trAIApiKey').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    TimeRecordingAI.promptForApiKey();
+                }
+            };
+        }
+
+        // AI Status popup toggle
+        if (document.getElementById('trAIStatusBtn')) {
+            document.getElementById('trAIStatusBtn').onclick = () => {
+                const popup = document.getElementById('trAIStatusPopup');
+                if (popup) {
+                    popup.style.display = popup.style.display === 'flex' ? 'none' : 'flex';
+                }
+            };
+        }
+        if (document.getElementById('trAIStatusClose')) {
+            document.getElementById('trAIStatusClose').onclick = () => {
+                const popup = document.getElementById('trAIStatusPopup');
+                if (popup) popup.style.display = 'none';
+            };
+        }
+        if (document.getElementById('trAIStatusClear')) {
+            document.getElementById('trAIStatusClear').onclick = () => {
+                const log = document.getElementById('trAIStatusLog');
+                if (log) log.innerHTML = '<div style="color: #999; font-style: italic;">Log cleared.</div>';
+                if (window.TimeRecordingAI) TimeRecordingAI.statusLog = [];
+            };
+        }
+
         // Enter key in AI input
         if (document.getElementById('trAIInput')) {
             document.getElementById('trAIInput').onkeypress = (e) => {
@@ -3921,6 +5162,11 @@ window.TimeRecordingUI = {
         }
 
         TimeRecordingUtils.log('info', 'Calendar rendered successfully');
+
+        // Re-apply AI calendar overlays (highlights + persistent notes)
+        if (window.TimeRecordingAI) {
+            setTimeout(() => TimeRecordingAI.reapplyCalendarOverlays(), 50);
+        }
     },
 
     // Rest of the existing methods...
@@ -4106,7 +5352,6 @@ window.TimeRecordingUI = {
 
 
 };
-// Time Recording Calendar - Utilities Module
 window.TimeRecordingUtils = {
     // Date formatting utilities
     formatDate: function(date) {
@@ -4244,7 +5489,6 @@ window.TimeRecordingUtils = {
         return result;
     }
 };
-// Time Recording Calendar - Main Application
 (async function () {
     'use strict';
 
@@ -4270,7 +5514,7 @@ window.TimeRecordingUtils = {
             return;
         }
     }
-    TimeRecordingAI.init('AIzaSyCL-Erm69uT_MkRcFl9z3PbzUlpVfzo8S4');
+    TimeRecordingAI.init();//load api key from storage
     // Initialize application
     async function initialize() {
         try { // Create UI first

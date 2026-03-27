@@ -29,7 +29,7 @@ if (appcontent) {
             return;
         }
     }
-    TimeRecordingAI.init("AIzaSyCL-Erm69uT_MkRcFl9z3PbzUlpVfzo8S4");//api key
+    TimeRecordingAI.init();//load api key from storage
     // Initialize application
     async function initialize() {
         try { // Create UI first
