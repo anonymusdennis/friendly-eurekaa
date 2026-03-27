@@ -52,6 +52,7 @@ window.TimeRecordingUI = {
                                     <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
                                     <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
                                     <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
+                                    <button id="trAISwitchModel" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Switch AI model (Flash/Pro)">⚡</button>
                                 </div>
                             </div>
                         </div>
@@ -939,6 +940,17 @@ window.TimeRecordingUI = {
                             TimeRecordingAI.processClipboardContent(manualPaste);
                         }
                     }
+                }
+            };
+        }
+
+        // Switch Model button
+        if (document.getElementById('trAISwitchModel')) {
+            document.getElementById('trAISwitchModel').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    const currentModel = TimeRecordingConfig.ai?.model || 'gemini-2.5-flash';
+                    const newModel = currentModel === 'gemini-2.5-flash' ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+                    TimeRecordingAI.switchModel(newModel);
                 }
             };
         }
