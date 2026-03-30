@@ -54,6 +54,15 @@ window.TimeRecordingConfig = {
         enableSelfValidation: true,   // Validate entries before showing review dialog
     },
 
+    // Notification System Configuration
+    notifications: {
+        intervalMinutes: 30,      // Ask "what are you working on?" every N minutes
+        reaskDelayMinutes: 5,     // If no answer, wait N minutes and ask again
+        maxReasks: 5,             // Max re-ask attempts (intervalMinutes / reaskDelayMinutes)
+        enabled: true,            // Start enabled by default
+        sound: false              // Play sound with notification (not implemented yet)
+    },
+
     // UI Configuration
     ui: {
         colors: {

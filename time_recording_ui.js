@@ -120,6 +120,8 @@ window.TimeRecordingUI = {
     <button id="trImportICS" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;" title="Import Calendar (ICS)">📥</button>
     <button id="trToggleAI" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;" title="Toggle AI Assistant">🤖</button>
     <button id="trToggleDetails" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;" title="Toggle Day Details">📝</button>
+    <button id="trNotifyToggle" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;" title="Toggle work notifications (asks what you're working on)">🔕</button>
+    <button id="trNotifySettings" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 10px;" title="Notification settings">⚙️</button>
     <button id="trRefreshBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;">🔄</button>
     <button id="trMinimizeBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;">_</button>
     <button id="trCloseBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;">✕</button>
@@ -898,8 +900,15 @@ window.TimeRecordingUI = {
                 if (window.TimeRecordingAI) {
                     const input = document.getElementById('trAIInput');
                     if (input.value.trim()) {
-                        TimeRecordingAI.sendMessage(input.value);
+                        const msg = input.value;
                         input.value = '';
+                        // Notification system takes precedence when a prompt is
+                        // pending — it processes the response via AI to check/record
+                        // existing entries, then resumes the normal notification cycle.
+                        if (window.TimeRecordingNotify && TimeRecordingNotify.handleUserResponse(msg)) {
+                            return;
+                        }
+                        TimeRecordingAI.sendMessage(msg);
                     }
                 }
             };
@@ -1031,6 +1040,27 @@ window.TimeRecordingUI = {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     document.getElementById('trAISend').click();
+                }
+            };
+        }
+
+        // Notification system handlers
+        if (document.getElementById('trNotifyToggle')) {
+            document.getElementById('trNotifyToggle').onclick = () => {
+                if (window.TimeRecordingNotify) {
+                    const isActive = TimeRecordingNotify.toggle();
+                    const btn = document.getElementById('trNotifyToggle');
+                    btn.textContent = isActive ? '🔔' : '🔕';
+                    btn.title = isActive
+                        ? 'Notifications active — click to stop'
+                        : 'Toggle work notifications (asks what you\'re working on)';
+                }
+            };
+        }
+        if (document.getElementById('trNotifySettings')) {
+            document.getElementById('trNotifySettings').onclick = () => {
+                if (window.TimeRecordingNotify) {
+                    TimeRecordingNotify.showSettingsDialog();
                 }
             };
         }

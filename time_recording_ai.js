@@ -476,7 +476,7 @@ if (appcontent) {
                         }
 
                         // Apply only the fields that were provided
-                        const updatedRecord = { ...record, Mode: 'U' };
+                        const updatedRecord = { ...record, Mode: 'M' };
                         if (args.hours !== undefined) updatedRecord.Duration = args.hours.toString();
                         if (args.description !== undefined) updatedRecord.Content = args.description;
                         if (args.projectId !== undefined) updatedRecord.AccProjId = args.projectId;
