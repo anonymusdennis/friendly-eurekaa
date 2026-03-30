@@ -1416,7 +1416,9 @@ Today: ${context.currentDate}`;
                 },
 
                 // Handle function call responses from Gemini (supports chaining)
-                handleFunctionCallResponse: async function (functionCall, originalMessage, context, originalData) {
+                handleFunctionCallResponse: async function (functionCall, originalMessage, context, originalData, _depth) {
+                    const depth = _depth || 0;
+                    const maxAutoContinue = 3;
                     const name = functionCall.name;
                     const args = functionCall.args || {};
                     TimeRecordingUtils.log('info', 'AI called function: ' + name, args);
@@ -1437,22 +1439,24 @@ Today: ${context.currentDate}`;
                     }
 
                     // Send function result back to Gemini
+                    const contents = [
+                        ...context.chatHistory,
+                        { role: "user", parts: [{ text: originalMessage }] },
+                        originalData.candidates[0].content,
+                        {
+                            role: "user",
+                            parts: [{
+                                functionResponse: {
+                                    name: name,
+                                    response: { result: JSON.stringify(result) }
+                                }
+                            }]
+                        }
+                    ];
+
                     const functionResponseBody = {
                         system_instruction: { parts: { text: this.buildSystemPrompt(context) } },
-                        contents: [
-                            ...context.chatHistory,
-                            { role: "user", parts: [{ text: originalMessage }] },
-                            originalData.candidates[0].content,
-                            {
-                                role: "user",
-                                parts: [{
-                                    functionResponse: {
-                                        name: name,
-                                        response: { result: JSON.stringify(result) }
-                                    }
-                                }]
-                            }
-                        ],
+                        contents: contents,
                         generationConfig: this.buildGenerationConfig(),
                         safetySettings: [
                             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -1479,11 +1483,72 @@ Today: ${context.currentDate}`;
                     // Check for another function call (chained calls)
                     const nextFunctionCall = followUpParts.find(p => p.functionCall);
                     if (nextFunctionCall) {
-                        return await this.handleFunctionCallResponse(nextFunctionCall.functionCall, originalMessage, context, followUpData);
+                        return await this.handleFunctionCallResponse(nextFunctionCall.functionCall, originalMessage, context, followUpData, depth);
                     }
 
                     const textParts = followUpParts.filter(p => p.text !== undefined);
-                    return textParts.length > 0 ? textParts[textParts.length - 1].text : 'I processed the data but have no additional response.';
+                    if (textParts.length > 0) {
+                        return textParts[textParts.length - 1].text;
+                    }
+
+                    // No text response — auto-continue by nudging the AI to keep going
+                    if (depth < maxAutoContinue) {
+                        TimeRecordingUtils.log('info', 'AI returned no text after function call, auto-continuing (attempt ' + (depth + 1) + '/' + maxAutoContinue + ')');
+                        this.logStatus('thinking', 'No text response, nudging AI to continue (' + (depth + 1) + '/' + maxAutoContinue + ')...');
+
+                        // Add the AI's empty response and a nudge to continue
+                        const nudgeContents = [
+                            ...contents
+                        ];
+                        if (followUpData.candidates?.[0]?.content) {
+                            nudgeContents.push(followUpData.candidates[0].content);
+                        }
+                        nudgeContents.push({
+                            role: "user",
+                            parts: [{ text: "You processed the function data but didn't provide a response. Please continue and provide your complete response to the user based on the data you received." }]
+                        });
+
+                        const nudgeBody = {
+                            system_instruction: { parts: { text: this.buildSystemPrompt(context) } },
+                            contents: nudgeContents,
+                            generationConfig: this.buildGenerationConfig(),
+                            safetySettings: [
+                                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                            ],
+                            tools: [{ functionDeclarations: this.getFunctionDeclarations() }]
+                        };
+
+                        const nudgeResponse = await fetch(
+                            this.getEndpoint() + '?key=' + this.apiKey,
+                            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(nudgeBody) }
+                        );
+
+                        if (nudgeResponse.ok) {
+                            const nudgeData = await nudgeResponse.json();
+                            const nudgeParts = nudgeData.candidates?.[0]?.content?.parts || [];
+
+                            // Check for function call in nudge response
+                            const nudgeFunctionCall = nudgeParts.find(p => p.functionCall);
+                            if (nudgeFunctionCall) {
+                                return await this.handleFunctionCallResponse(nudgeFunctionCall.functionCall, originalMessage, context, nudgeData, depth + 1);
+                            }
+
+                            const nudgeTextParts = nudgeParts.filter(p => p.text !== undefined);
+                            if (nudgeTextParts.length > 0) {
+                                return nudgeTextParts[nudgeTextParts.length - 1].text;
+                            }
+                        }
+
+                        // Recurse with incremented depth if still no response
+                        return await this.handleFunctionCallResponse(functionCall, originalMessage, context, originalData, depth + 1);
+                    }
+
+                    // Exhausted auto-continue attempts — return a more helpful fallback
+                    TimeRecordingUtils.log('warning', 'AI returned no text after ' + maxAutoContinue + ' auto-continue attempts');
+                    return 'I processed the data from ' + name + ' but the AI did not generate a text response after ' + maxAutoContinue + ' attempts. Please try asking your question again or rephrase it.';
                 },
 
                 // Process AI response with self-validation
