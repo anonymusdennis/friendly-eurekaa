@@ -19,7 +19,8 @@ if (appcontent) {
         'TimeRecordingICS',
         'TimeRecordingAI',
         'TimeRecordingEdit',
-        'TimeRecordingDrag'
+        'TimeRecordingDrag',
+        'TimeRecordingNotify'
     ];
 
     for (const module of requiredModules) {
@@ -58,6 +59,19 @@ if (appcontent) {
                         TimeRecordingCalendar.refresh();
                     }
                 }, TimeRecordingConfig.ui.autoRefresh);
+            }
+
+            // Initialize notification system
+            TimeRecordingNotify.loadSettings();
+            TimeRecordingNotify.init();
+            if (TimeRecordingNotify._wasActive) {
+                TimeRecordingNotify.start();
+                // Update button icon to reflect active state
+                const btn = document.getElementById('trNotifyToggle');
+                if (btn) {
+                    btn.textContent = '🔔';
+                    btn.title = 'Notifications active — click to stop';
+                }
             }
 
         } catch (error) {
