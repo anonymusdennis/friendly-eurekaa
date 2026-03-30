@@ -902,7 +902,9 @@ window.TimeRecordingUI = {
                     if (input.value.trim()) {
                         const msg = input.value;
                         input.value = '';
-                        // Let notification system handle if it has a pending prompt
+                        // Notification system takes precedence when a prompt is
+                        // pending — it processes the response via AI to check/record
+                        // existing entries, then resumes the normal notification cycle.
                         if (window.TimeRecordingNotify && TimeRecordingNotify.handleUserResponse(msg)) {
                             return;
                         }

@@ -265,8 +265,13 @@ window.TimeRecordingNotify = {
 
     // Process the user's activity response through the AI
     processActivityResponse: async function (activity) {
+        // Sanitize activity text to prevent XSS in chat display
+        const sanitized = activity.replace(/[<>&"']/g, c => ({
+            '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;'
+        })[c]);
+
         if (!window.TimeRecordingAI || !TimeRecordingAI.apiKey) {
-            TimeRecordingAI.addMessage('model', '✅ Noted: "' + activity + '". (Set up AI API key to auto-record entries.)');
+            TimeRecordingAI.addMessage('model', '✅ Noted: "' + sanitized + '". (Set up AI API key to auto-record entries.)');
             return;
         }
 
@@ -308,9 +313,10 @@ Be concise in your response. This is an automated check — keep it brief and ac
         if (state) {
             this.lastActivity = state.lastActivity || null;
             this.lastPromptTime = state.lastPromptTime || null;
-            // Restore active state — will be started by main if was active
+            // Preserve previous active state without starting yet.
+            // The main module checks _wasActive and calls start() after full init.
             if (state.active) {
-                this.active = false; // Will be started properly by start()
+                this.active = false;
                 this._wasActive = true;
             }
         }
