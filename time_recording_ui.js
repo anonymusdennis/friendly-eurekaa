@@ -51,6 +51,7 @@ window.TimeRecordingUI = {
                                 <div style="display: flex; gap: 6px;">
                                     <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
                                     <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
+                                    <button id="trAIManageCtx" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Manage context files">📂</button>
                                     <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
                                     <button id="trAIApiKey" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Set/change API key">🔑</button>
                                     <button id="trAIStatusBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Open AI status/debug window">🔬</button>
@@ -924,6 +925,15 @@ window.TimeRecordingUI = {
             };
         }
 
+        // Manage Context button
+        if (document.getElementById('trAIManageCtx')) {
+            document.getElementById('trAIManageCtx').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    TimeRecordingAI.showManageContextDialog();
+                }
+            };
+        }
+
         // File input change handler
         if (document.getElementById('trAIFileInput')) {
             document.getElementById('trAIFileInput').onchange = (e) => {
@@ -970,6 +980,7 @@ window.TimeRecordingUI = {
             document.getElementById('trAIModelSelect').onchange = (e) => {
                 if (window.TimeRecordingAI && e.target.value) {
                     TimeRecordingAI.switchModel(e.target.value);
+                    TimeRecordingAI.saveSelectedModel();
                 }
             };
         }
@@ -1235,7 +1246,7 @@ window.TimeRecordingUI = {
                     taskId: entry.taskId,
                     projectDesc: favorite ?. AccProjDesc || '',
                     taskDesc: favorite ?. AccTaskPspDesc || '',
-                    accountInd: entry ?. AccountInd || '10', // Default to billable
+                    accountInd: entry?.accountInd || entry?.AccountInd || '10', // Default to billable
                 };
             });
 

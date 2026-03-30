@@ -790,6 +790,8 @@
                 init: async function (apiKey) {
                     // Load persisted calendar notes
                     this.loadCalendarNotes();
+                    // Load persisted context files
+                    this.loadContextFiles();
                     // If key passed directly, save it; otherwise load from storage
                     if (apiKey) {
                         this.apiKey = apiKey;
@@ -803,6 +805,8 @@
                     }
                     // Discover available models on init
                     await this.listModels();
+                    // Restore selected model after models are loaded
+                    this.restoreSelectedModel();
                 },
 
                 // Save API key to localStorage
@@ -845,6 +849,23 @@
                 initializeChat: function () {
                     if (!this.apiKey) {
                         this.addMessage('model', '\u{1F511} **API key not configured.** Click the \u{1F511} button above to enter your Gemini API key.\n\nGet a free key at: https://aistudio.google.com/apikey');
+                        return;
+                    }
+
+                    // Try to restore previous chat session
+                    if (this.loadChatHistory()) {
+                        // Chat restored from previous session
+                        if (this.contextFiles && this.contextFiles.length > 0) {
+                            const names = this.contextFiles.map(f => f.name).join(', ');
+                            const container = document.getElementById('trAIChatMessages');
+                            if (container) {
+                                const infoDiv = document.createElement('div');
+                                infoDiv.style.cssText = 'padding:6px 10px;background:#f0f4ff;border-radius:6px;font-size:11px;color:#667eea;margin-bottom:8px;';
+                                infoDiv.textContent = '\u{1F4C2} Context files active: ' + names;
+                                container.appendChild(infoDiv);
+                                container.scrollTop = container.scrollHeight;
+                            }
+                        }
                         return;
                     }
 
@@ -945,9 +966,8 @@
                         content = content.substring(0, maxLen);
                         this.addMessage('model', '\u26A0\uFE0F File was truncated to ' + maxLen + ' characters to fit context limits.');
                     }
-                    this.fileContext = content;
-                    this.fileContextName = filename;
-                    this.addMessage('model', '\u{1F4CE} **File loaded:** "' + filename + '" (' + content.length + ' chars)\nThis context will be included in all future AI requests to help match tasks and projects.');
+                    this.addContextFile(filename, content);
+                    this.addMessage('model', '\u{1F4CE} **File loaded:** "' + filename + '" (' + content.length + ' chars)\nThis context will be included in all future AI requests and persists between sessions.\nUse \u{1F4C2} to manage context files.');
                 },
 
                 // Process clipboard content
@@ -1572,7 +1592,8 @@ Today: ${context.currentDate}`;
                         entryDiv.style.cssText = 'padding:15px;margin-bottom:10px;border:2px solid #dee2e6;border-radius:8px;cursor:pointer;transition:all 0.2s;';
 
                         const dateFormatted = entry.date.substr(6, 2) + '.' + entry.date.substr(4, 2) + '.' + entry.date.substr(0, 4);
-                        const billableIcon = entry.AccountInd === '90' ? '\u{1F537}' : '\u{1F7E2}';
+                        const acctInd = entry.accountInd || entry.AccountInd || '10';
+                        const billableIcon = acctInd === '90' ? '\u{1F537}' : '\u{1F7E2}';
 
                         entryDiv.innerHTML = '<div style="display:flex;align-items:center;gap:15px;"><input type="checkbox" checked data-index="' + index + '" style="width:20px;height:20px;cursor:pointer;"><div style="flex:1;"><div style="font-weight:bold;margin-bottom:5px;">\u{1F4C5} ' + dateFormatted + ' \u2014 ' + entry.hours + 'h ' + billableIcon + '</div><div style="color:#666;font-size:14px;margin-bottom:3px;">\u{1F4C1} ' + entry.projectId + ' / ' + entry.taskId + '</div><div style="color:#333;">\u{1F4DD} ' + entry.description + '</div></div></div>';
 
@@ -1677,6 +1698,7 @@ Today: ${context.currentDate}`;
                     if (this.conversationHistory.length > this.maxHistoryLength) {
                         this.conversationHistory = this.conversationHistory.slice(-this.maxHistoryLength);
                     }
+                    this.saveChatHistory();
 
                     container.scrollTop = container.scrollHeight;
                 },
@@ -1702,11 +1724,201 @@ Today: ${context.currentDate}`;
                     const container = document.getElementById('trAIChatMessages');
                     if (container) container.innerHTML = '';
                     this.conversationHistory = [];
+                    this.saveChatHistory();
                     this.initializeChat();
                 },
 
                 exportConversation: function () {
                     return this.conversationHistory;
+                },
+
+                // --- Persistence: Chat History ---
+                saveChatHistory: function () {
+                    try {
+                        const toSave = this.conversationHistory.map(msg => ({
+                            sender: msg.sender,
+                            content: msg.content,
+                            timestamp: msg.timestamp
+                        }));
+                        TimeRecordingUtils.storage.save('ai_chat_history', toSave);
+                    } catch (e) {
+                        TimeRecordingUtils.log('warning', 'Failed to save chat history', e);
+                    }
+                },
+
+                loadChatHistory: function () {
+                    try {
+                        const saved = TimeRecordingUtils.storage.load('ai_chat_history', []);
+                        if (saved && saved.length > 0) {
+                            this.conversationHistory = saved;
+                            const container = document.getElementById('trAIChatMessages');
+                            if (container) {
+                                saved.forEach(msg => {
+                                    const messageDiv = document.createElement('div');
+                                    messageDiv.className = 'tr-ai-message tr-ai-message-' + msg.sender;
+                                    messageDiv.style.marginBottom = '10px';
+                                    let displayContent = msg.content;
+                                    displayContent = displayContent.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                                    displayContent = displayContent.replace(/_([^_]+)_/g, '<em>$1</em>');
+                                    if (!displayContent.includes('<pre')) {
+                                        displayContent = displayContent.replace(/\n/g, '<br>');
+                                    }
+                                    messageDiv.innerHTML = '<div style="font-size:11px;color:#666;margin-bottom:5px;font-weight:bold;">' + (msg.sender === 'user' ? '\u{1F464} You' : '\u{1F916} AI') + '</div><div style="font-size:13px;line-height:1.5;">' + displayContent + '</div>';
+                                    container.appendChild(messageDiv);
+                                });
+                                container.scrollTop = container.scrollHeight;
+                            }
+                            return true;
+                        }
+                    } catch (e) {
+                        TimeRecordingUtils.log('warning', 'Failed to load chat history', e);
+                    }
+                    return false;
+                },
+
+                // --- Persistence: Context Files ---
+                saveContextFiles: function () {
+                    try {
+                        const files = this.contextFiles || [];
+                        TimeRecordingUtils.storage.save('ai_context_files', files);
+                    } catch (e) {
+                        TimeRecordingUtils.log('warning', 'Failed to save context files', e);
+                    }
+                },
+
+                loadContextFiles: function () {
+                    try {
+                        const saved = TimeRecordingUtils.storage.load('ai_context_files', []);
+                        if (saved && saved.length > 0) {
+                            this.contextFiles = saved;
+                            this.fileContext = saved.map(f => f.content).join('\n\n---\n\n');
+                            this.fileContextName = saved.map(f => f.name).join(', ');
+                            return true;
+                        }
+                    } catch (e) {
+                        TimeRecordingUtils.log('warning', 'Failed to load context files', e);
+                    }
+                    this.contextFiles = [];
+                    return false;
+                },
+
+                addContextFile: function (name, content) {
+                    if (!this.contextFiles) this.contextFiles = [];
+                    this.contextFiles = this.contextFiles.filter(f => f.name !== name);
+                    this.contextFiles.push({ name: name, content: content, addedAt: new Date().toISOString(), size: content.length });
+                    this.fileContext = this.contextFiles.map(f => f.content).join('\n\n---\n\n');
+                    this.fileContextName = this.contextFiles.map(f => f.name).join(', ');
+                    this.saveContextFiles();
+                },
+
+                removeContextFile: function (name) {
+                    if (!this.contextFiles) return;
+                    this.contextFiles = this.contextFiles.filter(f => f.name !== name);
+                    if (this.contextFiles.length > 0) {
+                        this.fileContext = this.contextFiles.map(f => f.content).join('\n\n---\n\n');
+                        this.fileContextName = this.contextFiles.map(f => f.name).join(', ');
+                    } else {
+                        this.fileContext = null;
+                        this.fileContextName = null;
+                    }
+                    this.saveContextFiles();
+                },
+
+                // --- Persistence: Selected Model ---
+                saveSelectedModel: function () {
+                    try {
+                        const select = document.getElementById('trAIModelSelect');
+                        if (select && select.value) {
+                            TimeRecordingUtils.storage.save('ai_selected_model', select.value);
+                        }
+                    } catch (e) {
+                        TimeRecordingUtils.log('warning', 'Failed to save selected model', e);
+                    }
+                },
+
+                loadSelectedModel: function () {
+                    try {
+                        return TimeRecordingUtils.storage.load('ai_selected_model', null);
+                    } catch (e) {
+                        return null;
+                    }
+                },
+
+                restoreSelectedModel: function () {
+                    const saved = this.loadSelectedModel();
+                    if (saved) {
+                        const select = document.getElementById('trAIModelSelect');
+                        if (select) {
+                            for (let i = 0; i < select.options.length; i++) {
+                                if (select.options[i].value === saved) {
+                                    select.value = saved;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                },
+
+                // --- Manage Context Dialog ---
+                showManageContextDialog: function () {
+                    const existing = document.getElementById('trManageContextDialog');
+                    if (existing) existing.remove();
+
+                    const files = this.contextFiles || [];
+
+                    const dialog = document.createElement('div');
+                    dialog.id = 'trManageContextDialog';
+                    dialog.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);z-index:10001;width:500px;max-height:70vh;display:flex;flex-direction:column;';
+
+                    let fileListHtml = '';
+                    if (files.length === 0) {
+                        fileListHtml = '<div style="color:#999;text-align:center;padding:20px;">No context files loaded.<br>Use \u{1F4CE} to upload files.</div>';
+                    } else {
+                        files.forEach((file, index) => {
+                            const sizeStr = file.size > 1024 ? (file.size / 1024).toFixed(1) + ' KB' : file.size + ' B';
+                            const addedStr = file.addedAt ? new Date(file.addedAt).toLocaleDateString() : 'unknown';
+                            fileListHtml += '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid #dee2e6;border-radius:6px;margin-bottom:8px;">' +
+                                '<div style="flex:1;">' +
+                                '<div style="font-weight:bold;">\u{1F4C4} ' + file.name + '</div>' +
+                                '<div style="font-size:12px;color:#666;">' + sizeStr + ' \u2022 Added: ' + addedStr + '</div>' +
+                                '</div>' +
+                                '<button data-ctx-index="' + index + '" class="trCtxRemoveBtn" style="background:#dc3545;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;">\u{1F5D1}\uFE0F Remove</button>' +
+                                '</div>';
+                        });
+                    }
+
+                    dialog.innerHTML = '<div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:15px;color:white;border-radius:12px 12px 0 0;">' +
+                        '<h3 style="margin:0;">\u{1F4C2} Manage Context Files</h3>' +
+                        '<p style="margin:5px 0 0;opacity:0.9;font-size:13px;">' + files.length + ' file(s) loaded \u2022 Files persist between sessions</p>' +
+                        '</div>' +
+                        '<div style="flex:1;overflow-y:auto;padding:15px;" id="trCtxFileList">' + fileListHtml + '</div>' +
+                        '<div style="padding:15px;border-top:1px solid #dee2e6;display:flex;gap:10px;justify-content:flex-end;">' +
+                        '<button id="trCtxAddFile" style="padding:8px 16px;background:#667eea;color:white;border:none;border-radius:6px;cursor:pointer;">\u{1F4CE} Add File</button>' +
+                        '<button id="trCtxClose" style="padding:8px 16px;background:#6c757d;color:white;border:none;border-radius:6px;cursor:pointer;">Close</button>' +
+                        '</div>';
+
+                    document.body.appendChild(dialog);
+
+                    dialog.querySelectorAll('.trCtxRemoveBtn').forEach(btn => {
+                        btn.onclick = () => {
+                            const idx = parseInt(btn.dataset.ctxIndex);
+                            const file = this.contextFiles[idx];
+                            if (file) {
+                                this.removeContextFile(file.name);
+                                this.addMessage('model', '\u{1F5D1}\uFE0F Context file "' + file.name + '" removed.');
+                                dialog.remove();
+                                this.showManageContextDialog();
+                            }
+                        };
+                    });
+
+                    document.getElementById('trCtxAddFile').onclick = () => {
+                        dialog.remove();
+                        document.getElementById('trAIFileInput').click();
+                    };
+
+                    document.getElementById('trCtxClose').onclick = () => dialog.remove();
                 }
             };
 window.TimeRecordingAPI = {
@@ -4041,6 +4253,7 @@ window.TimeRecordingUI = {
                                 <div style="display: flex; gap: 6px;">
                                     <button id="trAILoadHistory" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Load historical records for AI context">📊</button>
                                     <button id="trAIUploadFile" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Upload context file">📎</button>
+                                    <button id="trAIManageCtx" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Manage context files">📂</button>
                                     <button id="trAIPasteClipboard" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Analyze clipboard content">📋</button>
                                     <button id="trAIApiKey" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Set/change API key">🔑</button>
                                     <button id="trAIStatusBtn" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;" title="Open AI status/debug window">🔬</button>
@@ -4914,6 +5127,15 @@ window.TimeRecordingUI = {
             };
         }
 
+        // Manage Context button
+        if (document.getElementById('trAIManageCtx')) {
+            document.getElementById('trAIManageCtx').onclick = () => {
+                if (window.TimeRecordingAI) {
+                    TimeRecordingAI.showManageContextDialog();
+                }
+            };
+        }
+
         // File input change handler
         if (document.getElementById('trAIFileInput')) {
             document.getElementById('trAIFileInput').onchange = (e) => {
@@ -4960,6 +5182,7 @@ window.TimeRecordingUI = {
             document.getElementById('trAIModelSelect').onchange = (e) => {
                 if (window.TimeRecordingAI && e.target.value) {
                     TimeRecordingAI.switchModel(e.target.value);
+                    TimeRecordingAI.saveSelectedModel();
                 }
             };
         }
@@ -5225,7 +5448,7 @@ window.TimeRecordingUI = {
                     taskId: entry.taskId,
                     projectDesc: favorite ?. AccProjDesc || '',
                     taskDesc: favorite ?. AccTaskPspDesc || '',
-                    accountInd: entry ?. AccountInd || '10', // Default to billable
+                    accountInd: entry?.accountInd || entry?.AccountInd || '10', // Default to billable
                 };
             });
 
