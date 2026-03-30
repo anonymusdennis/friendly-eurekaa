@@ -469,7 +469,7 @@
                         }
 
                         // Apply only the fields that were provided
-                        const updatedRecord = { ...record, Mode: 'U' };
+                        const updatedRecord = { ...record, Mode: 'M' };
                         if (args.hours !== undefined) updatedRecord.Duration = args.hours.toString();
                         if (args.description !== undefined) updatedRecord.Content = args.description;
                         if (args.projectId !== undefined) updatedRecord.AccProjId = args.projectId;
@@ -3594,7 +3594,7 @@ window.TimeRecordingEdit = {
         };
         
         // Update mode for editing
-        updatedRecord.Mode = 'U';
+        updatedRecord.Mode = 'M';
         
         try {
             // Show loading
@@ -3636,7 +3636,7 @@ window.TimeRecordingEdit = {
             "NavToTimeRecordS4": [{
                 "Pernr": config.userPernr,
                 "Counter": record.Counter,
-                "Mode": record.Mode, // U for update, D for delete
+                "Mode": record.Mode, // M for modify, D for delete
                 "RecordDate": record.RecordDate,
                 "Duration": record.Duration.toString(),
                 "CompanyCode": record.CompanyCode || "",
@@ -3665,8 +3665,8 @@ window.TimeRecordingEdit = {
                 "TicketGuid": record.TicketGuid || "",
                 "ObjectId": record.ObjectId || "",
                 "TicketDescription": record.TicketDescription || "",
-                "StartTime": record.StartTime || "PT00H00M00S",
-                "EndTime": record.EndTime || "PT00H00M00S",
+                "StartTime": record.StartTime || "PT00H00M",
+                "EndTime": record.EndTime || "PT00H00M",
                 "StandByTypeValue": record.StandByTypeValue || "",
                 "StandByCompValue": record.StandByCompValue || "",
                 "TimeCategory": record.TimeCategory || "",
@@ -3741,7 +3741,7 @@ window.TimeRecordingEdit = {
     },
     
     parseTime: function(timeStr) {
-        if (!timeStr || timeStr === 'PT00H00M00S') return '';
+        if (!timeStr || timeStr === 'PT00H00M00S' || timeStr === 'PT00H00M') return '';
         const match = timeStr.match(/PT(\d+)H(\d+)M/);
         if (match) {
             const hours = match[1].padStart(2, '0');
@@ -3752,12 +3752,12 @@ window.TimeRecordingEdit = {
     },
     
     formatTime: function(timeStr) {
-        if (!timeStr) return 'PT00H00M00S';
+        if (!timeStr) return 'PT00H00M';
         const parts = timeStr.split(':');
         if (parts.length === 2) {
-            return `PT${parts[0]}H${parts[1]}M00S`;
+            return `PT${parts[0]}H${parts[1]}M`;
         }
-        return 'PT00H00M00S';
+        return 'PT00H00M';
     },
     
     getStatusText: function(status) {
