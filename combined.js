@@ -4273,15 +4273,6 @@ Please generate time entries for all these meetings.`;
         });
     }
 };
-
-// Add ICS import button to the UI
-// Add this to the header buttons in getHTML():
-`<button id="trImportICS" style="background: rgba(255,255,255,0.2); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer;" title="Import ICS Calendar">📥</button>`
-
-// Add event handler in attachEventHandlers():
-document.getElementById('trImportICS').onclick = () => {
-    TimeRecordingICS.showImportDialog();
-};
 // Time Recording Calendar - Notification System Module
 // Periodically asks the user what they're working on via desktop notifications.
 // If they answer, the AI checks if the work is already recorded and extends or creates entries.
@@ -6241,8 +6232,7 @@ window.TimeRecordingUtils = {
         'TimeRecordingICS',
         'TimeRecordingAI',
         'TimeRecordingEdit',
-        'TimeRecordingDrag',
-        'TimeRecordingNotify'
+        'TimeRecordingDrag'
     ];
 
     for (const module of requiredModules) {
@@ -6283,16 +6273,18 @@ window.TimeRecordingUtils = {
                 }, TimeRecordingConfig.ui.autoRefresh);
             }
 
-            // Initialize notification system
-            TimeRecordingNotify.loadSettings();
-            TimeRecordingNotify.init();
-            if (TimeRecordingNotify._wasActive) {
-                TimeRecordingNotify.start();
-                // Update button icon to reflect active state
-                const btn = document.getElementById('trNotifyToggle');
-                if (btn) {
-                    btn.textContent = '🔔';
-                    btn.title = 'Notifications active — click to stop';
+            // Initialize notification system (optional module)
+            if (window.TimeRecordingNotify) {
+                TimeRecordingNotify.loadSettings();
+                TimeRecordingNotify.init();
+                if (TimeRecordingNotify._wasActive) {
+                    TimeRecordingNotify.start();
+                    // Update button icon to reflect active state
+                    const btn = document.getElementById('trNotifyToggle');
+                    if (btn) {
+                        btn.textContent = '🔔';
+                        btn.title = 'Notifications active — click to stop';
+                    }
                 }
             }
 
