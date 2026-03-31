@@ -464,12 +464,12 @@ createTimeRecord: async function(recordData) {
 
         // Child search: find all PSP elements that are children of the given parent
         if (childSearch && parentPsp) {
-            const parentNormalized = parentPsp.toLowerCase().replace(/[-]/g, '-');
+            const parentLower = parentPsp.toLowerCase();
             results = results.filter(f => {
                 const taskId = (f.AccTaskPspId || '').toLowerCase();
                 // A child starts with the parent ID followed by a dash and more segments
-                return taskId.startsWith(parentNormalized.toLowerCase() + '-') ||
-                       taskId === parentNormalized.toLowerCase();
+                return taskId.startsWith(parentLower + '-') ||
+                       taskId === parentLower;
             });
             // If no other filters, return child results directly
             if (!query && !pspId && !projectId && !partner && !description) {

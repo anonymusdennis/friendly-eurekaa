@@ -2522,12 +2522,12 @@ createTimeRecord: async function(recordData) {
 
         // Child search: find all PSP elements that are children of the given parent
         if (childSearch && parentPsp) {
-            const parentNormalized = parentPsp.toLowerCase().replace(/[-]/g, '-');
+            const parentLower = parentPsp.toLowerCase();
             results = results.filter(f => {
                 const taskId = (f.AccTaskPspId || '').toLowerCase();
                 // A child starts with the parent ID followed by a dash and more segments
-                return taskId.startsWith(parentNormalized.toLowerCase() + '-') ||
-                       taskId === parentNormalized.toLowerCase();
+                return taskId.startsWith(parentLower + '-') ||
+                       taskId === parentLower;
             });
             // If no other filters, return child results directly
             if (!query && !pspId && !projectId && !partner && !description) {
@@ -3771,10 +3771,10 @@ window.TimeRecordingEdit = {
                 resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;">No results found. Try using wildcards: <code>*keyword*</code></div>';
                 statusDiv.innerHTML = '';
             } else {
-                statusDiv.innerHTML = `Found <strong>${results.length}</strong> PSP element${results.length !== 1 ? 's' : ''}` +
-                    (childMode && parentPsp ? ` (children of <code>${parentPsp}</code>)` : '');
-                
                 const escapeHtml = (str) => (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                statusDiv.innerHTML = `Found <strong>${results.length}</strong> PSP element${results.length !== 1 ? 's' : ''}` +
+                    (childMode && parentPsp ? ` (children of <code>${escapeHtml(parentPsp)}</code>)` : '');
+                
                 let html = '<div style="margin-top: 8px;">';
                 results.forEach((result, index) => {
                     const rPspId = escapeHtml(result.pspId);
