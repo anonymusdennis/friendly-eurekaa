@@ -325,6 +325,23 @@
                             }
                         },
                         {
+                            name: "searchPSP",
+                            description: "Search for PSP (Project Structure Plan) elements across the user's favorites. Supports wildcard patterns (* for any characters, ? for single character), text search across all fields, and child search to find sub-elements of a parent PSP. Use this when the user asks to find a project, look up a PSP, or needs to identify the correct task/PSP element for time recording.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    query: { type: "string", description: "Global search text — searches across PSP ID, description, project ID, project description, and partner name. Supports wildcards (* and ?). Examples: 'Platform', '2911.IN.0072*', '*Rufbereitschaft*'" },
+                                    pspId: { type: "string", description: "Filter by PSP ID specifically. Supports wildcards. Examples: '2911.IN.0076-*', '2911.IN.00??-01'" },
+                                    projectId: { type: "string", description: "Filter by Project ID. Supports wildcards. Examples: 'WG2911', 'WG*'" },
+                                    partner: { type: "string", description: "Filter by partner/company name. Supports wildcards. Examples: 'Würth IT*', '*Adolf*'" },
+                                    description: { type: "string", description: "Filter by PSP or project description. Supports wildcards. Examples: '*Consulting*', '*Tower*'" },
+                                    parentPsp: { type: "string", description: "Parent PSP ID for child search. When childSearch is true, finds all sub-elements. Example: '2911.IN.0076' finds 2911.IN.0076-01, -02, etc." },
+                                    childSearch: { type: "boolean", description: "Set to true to find all children/sub-elements of the parentPsp. Default: false" }
+                                },
+                                required: []
+                            }
+                        },
+                        {
                             name: "createTimeEntry",
                             description: "Create new time entries for the user. Shows a review dialog where the user can approve, edit, or reject entries before they are saved. Use this when you have determined the correct project, task, hours, and description for one or more days.",
                             parameters: {
@@ -409,6 +426,8 @@
                             return this.handleAddCalendarNote(args);
                         case 'removeCalendarNote':
                             return this.handleRemoveCalendarNote(args);
+                        case 'searchPSP':
+                            return this.handleSearchPSP(args);
                         case 'createTimeEntry':
                             return this.handleCreateTimeEntry(args);
                         default:
@@ -635,6 +654,45 @@
                         };
                     } catch (error) {
                         return { error: 'Search failed: ' + error.message };
+                    }
+                },
+
+                // Handle searchPSP — search PSP elements with wildcard, text, and child search
+                handleSearchPSP: function (args) {
+                    try {
+                        const results = TimeRecordingAPI.searchPSPElements({
+                            query: args.query,
+                            pspId: args.pspId,
+                            projectId: args.projectId,
+                            partner: args.partner,
+                            description: args.description,
+                            parentPsp: args.parentPsp,
+                            childSearch: args.childSearch || false
+                        });
+
+                        if (results.length === 0) {
+                            return {
+                                totalResults: 0,
+                                message: 'No PSP elements found matching your criteria. Try broader wildcards (e.g. *keyword*) or check spelling.',
+                                results: []
+                            };
+                        }
+
+                        // Cap results to avoid overwhelming the AI context
+                        const maxResults = 50;
+                        const truncated = results.length > maxResults;
+                        const returnResults = results.slice(0, maxResults);
+
+                        return {
+                            totalResults: results.length,
+                            showing: returnResults.length,
+                            truncated: truncated,
+                            childSearch: args.childSearch || false,
+                            parentPsp: args.parentPsp || null,
+                            results: returnResults
+                        };
+                    } catch (error) {
+                        return { error: 'PSP search failed: ' + error.message };
                     }
                 },
 
@@ -1188,9 +1246,10 @@ You can:
 4. **Delete** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`deleteExistingRecord\`
 5. **Query** data \u2014 \`getMissingDays\`, \`getMonthSummary\`, \`getRecordsForDate\`, \`getFavorites\`, \`getProjectDetails\`
 6. **Search** \u2014 \`getRecordsForDateRange\` for multi-day lookups, \`searchRecords\` for keyword/project search
-7. **Clarify** \u2014 \`askUser\` when uncertain
-8. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
-9. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
+7. **Search PSP** \u2014 \`searchPSP\` to find PSP elements with wildcard patterns (*, ?), text search, or child search
+8. **Clarify** \u2014 \`askUser\` when uncertain
+9. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
+10. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
 
 # VISUAL FEEDBACK STRATEGY
 - When working on multiple days, call \`highlightDay\` on each day you're processing so the user can see your progress
@@ -1202,8 +1261,16 @@ You can:
 - Call \`makeNotes\` first to plan complex requests
 - Call \`getRecordsForDate\` or \`getRecordsForDateRange\` to see existing data before making changes
 - Call \`searchRecords\` to find records matching a keyword or project across the month
+- Call \`searchPSP\` to find PSP elements by name, ID, description, or to explore child elements (supports wildcards * and ?)
 - Call \`getFavorites\` if you need to look up available projects
 - Chain multiple function calls when needed \u2014 call one, get results, then call another
+
+## PSP SEARCH STRATEGY
+When the user asks to find a project/PSP, look up a task, or you need to identify the correct PSP element:
+- Use \`searchPSP\` with \`query\` for broad text search (e.g. query: "Platform")
+- Use wildcards for pattern matching (e.g. pspId: "2911.IN.0076-*" or query: "*Consulting*")
+- Use \`childSearch: true\` with \`parentPsp\` to find all sub-elements (e.g. parentPsp: "2911.IN.0076" finds -01, -02, -03...)
+- Combine filters for precise results (e.g. projectId: "WG2911" + description: "*Tower*")
 
 # EDITING WORKFLOW
 When the user asks to edit or change an existing record:
@@ -1284,6 +1351,15 @@ ${fence}
 
 **User:** "Find all my platform entries this month"
 **Response:** Calls \`searchRecords\` with keyword "platform", then summarizes the results.
+
+**User:** "What PSP elements are available for internal support?"
+**Response:** Calls \`searchPSP\` with query: "*Internal Support*", presents the matching PSP elements.
+
+**User:** "Show me all children of PSP 2911.IN.0076"
+**Response:** Calls \`searchPSP\` with childSearch: true, parentPsp: "2911.IN.0076", lists all sub-elements (-01 through -07).
+
+**User:** "Find all Rufbereitschaft tasks"
+**Response:** Calls \`searchPSP\` with query: "*Rufbereitschaft*", presents matching PSP elements with their IDs.
 
 # OUTPUT FORMAT
 When suggesting NEW entries, output EXACTLY ONE JSON block:
@@ -2400,6 +2476,133 @@ createTimeRecord: async function(recordData) {
             return null;
         }
     },
+
+    // Search PSP elements across user favorites with advanced filtering
+    // Supports: wildcard (*, ?), text search, and child search
+    searchPSPElements: function(options) {
+        const favorites = this.getUserFavorites();
+        if (!favorites || favorites.length === 0) {
+            return [];
+        }
+
+        const query = (options.query || '').trim();
+        const pspId = (options.pspId || '').trim();
+        const projectId = (options.projectId || '').trim();
+        const partner = (options.partner || '').trim();
+        const description = (options.description || '').trim();
+        const parentPsp = (options.parentPsp || '').trim();
+        const childSearch = !!options.childSearch;
+
+        // Convert wildcard pattern to RegExp (supports * and ?)
+        function wildcardToRegex(pattern) {
+            if (!pattern) return null;
+            const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+            const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+            try {
+                return new RegExp('^' + regexStr + '$', 'i');
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Check if a string matches a filter (supports wildcard or substring)
+        function matchesFilter(value, filter) {
+            if (!filter) return true;
+            if (!value) return false;
+            // If filter contains wildcard characters, use regex matching
+            if (filter.includes('*') || filter.includes('?')) {
+                const regex = wildcardToRegex(filter);
+                return regex ? regex.test(value) : false;
+            }
+            // Otherwise, case-insensitive substring match
+            return value.toLowerCase().includes(filter.toLowerCase());
+        }
+
+        let results = favorites;
+
+        // Child search: find all PSP elements that are children of the given parent
+        if (childSearch && parentPsp) {
+            const parentNormalized = parentPsp.toLowerCase().replace(/[-]/g, '-');
+            results = results.filter(f => {
+                const taskId = (f.AccTaskPspId || '').toLowerCase();
+                // A child starts with the parent ID followed by a dash and more segments
+                return taskId.startsWith(parentNormalized.toLowerCase() + '-') ||
+                       taskId === parentNormalized.toLowerCase();
+            });
+            // If no other filters, return child results directly
+            if (!query && !pspId && !projectId && !partner && !description) {
+                return results.map(f => ({
+                    pspId: f.AccTaskPspId,
+                    pspDesc: f.AccTaskPspDesc || f.Name || '',
+                    projectId: f.AccProjId,
+                    projectDesc: f.AccProjDesc || '',
+                    partner: f.PartnerNo || f.Partner || '',
+                    name: f.Name || ''
+                }));
+            }
+        }
+
+        // Global text search (searches across all fields)
+        if (query) {
+            const isWildcard = query.includes('*') || query.includes('?');
+            if (isWildcard) {
+                const regex = wildcardToRegex(query);
+                if (regex) {
+                    results = results.filter(f =>
+                        regex.test(f.AccTaskPspId || '') ||
+                        regex.test(f.AccTaskPspDesc || '') ||
+                        regex.test(f.AccProjId || '') ||
+                        regex.test(f.AccProjDesc || '') ||
+                        regex.test(f.Name || '') ||
+                        regex.test(f.PartnerNo || '') ||
+                        regex.test(f.Partner || '')
+                    );
+                }
+            } else {
+                const lowerQuery = query.toLowerCase();
+                results = results.filter(f =>
+                    (f.AccTaskPspId || '').toLowerCase().includes(lowerQuery) ||
+                    (f.AccTaskPspDesc || '').toLowerCase().includes(lowerQuery) ||
+                    (f.AccProjId || '').toLowerCase().includes(lowerQuery) ||
+                    (f.AccProjDesc || '').toLowerCase().includes(lowerQuery) ||
+                    (f.Name || '').toLowerCase().includes(lowerQuery) ||
+                    (f.PartnerNo || '').toLowerCase().includes(lowerQuery) ||
+                    (f.Partner || '').toLowerCase().includes(lowerQuery)
+                );
+            }
+        }
+
+        // Field-specific filters with wildcard support
+        if (pspId) {
+            results = results.filter(f => matchesFilter(f.AccTaskPspId, pspId));
+        }
+        if (projectId) {
+            results = results.filter(f => matchesFilter(f.AccProjId, projectId));
+        }
+        if (partner) {
+            results = results.filter(f =>
+                matchesFilter(f.PartnerNo, partner) ||
+                matchesFilter(f.Partner, partner) ||
+                matchesFilter(f.Name, partner)
+            );
+        }
+        if (description) {
+            results = results.filter(f =>
+                matchesFilter(f.AccTaskPspDesc, description) ||
+                matchesFilter(f.AccProjDesc, description)
+            );
+        }
+
+        // Map to clean output format
+        return results.map(f => ({
+            pspId: f.AccTaskPspId,
+            pspDesc: f.AccTaskPspDesc || f.Name || '',
+            projectId: f.AccProjId,
+            projectDesc: f.AccProjDesc || '',
+            partner: f.PartnerNo || f.Partner || '',
+            name: f.Name || ''
+        }));
+    },
     
     // Fetch records for entire month (keep existing implementation)
     fetchMonthRecords: async function(year, month) {
@@ -3436,58 +3639,68 @@ window.TimeRecordingEdit = {
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             z-index: 10004;
-            width: 700px;
-            max-height: 80vh;
+            width: 780px;
+            max-height: 85vh;
             display: flex;
             flex-direction: column;
         `;
         
         searchDialog.innerHTML = `
-            <div style="background: linear-gradient(135deg, #007bff, #0056b3); padding: 15px; color: white; border-radius: 12px 12px 0 0;">
+            <div style="background: linear-gradient(135deg, #007bff, #0056b3); padding: 15px; color: white; border-radius: 12px 12px 0 0; display: flex; justify-content: space-between; align-items: center;">
                 <h3 style="margin: 0;">🔍 Search PSP Elements</h3>
+                <span style="font-size: 11px; opacity: 0.85;">Supports wildcards: * (any) and ? (single char)</span>
             </div>
             
             <div style="padding: 20px;">
-                <div style="display: grid; grid-template-columns: 1fr; gap: 15px;">
-                    <div>
-                        <label style="display: block; font-size: 12px; margin-bottom: 5px;">Partner Number</label>
-                        <div style="display: flex; gap: 10px;">
-                            <input type="text" id="trSearchPartner" placeholder="Partner Number" style="flex: 1; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;">
-                            <button style="padding: 8px; border: 1px solid #dee2e6; background: white; border-radius: 4px; cursor: pointer;">🔍</button>
+                <!-- Global text search -->
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; font-size: 12px; font-weight: bold; margin-bottom: 5px;">🔎 Quick Search (all fields)</label>
+                    <input type="text" id="trSearchGlobal" placeholder="Type to search across all fields... (e.g. 'Platform' or '2911.IN.0072*')" style="width: 100%; padding: 10px; border: 2px solid #007bff; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                </div>
+                
+                <details style="margin-bottom: 10px;">
+                    <summary style="cursor: pointer; font-size: 12px; color: #666; padding: 5px 0;">⚙️ Advanced Filters</summary>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+                        <div>
+                            <label style="display: block; font-size: 11px; margin-bottom: 3px; color: #555;">Partner Name</label>
+                            <input type="text" id="trSearchPartner" placeholder="e.g. Würth IT*" style="width: 100%; padding: 7px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 11px; margin-bottom: 3px; color: #555;">Project ID</label>
+                            <input type="text" id="trSearchProjectId" placeholder="e.g. WG2911 or WG*" style="width: 100%; padding: 7px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 11px; margin-bottom: 3px; color: #555;">Project Description</label>
+                            <input type="text" id="trSearchProjectDesc" placeholder="e.g. *Consulting*" style="width: 100%; padding: 7px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+                        </div>
+                        <div>
+                            <label style="display: block; font-size: 11px; margin-bottom: 3px; color: #555;">PSP ID</label>
+                            <input type="text" id="trSearchPSPId" placeholder="e.g. 2911.IN.0076-*" style="width: 100%; padding: 7px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
+                        </div>
+                        <div style="grid-column: 1 / -1;">
+                            <label style="display: block; font-size: 11px; margin-bottom: 3px; color: #555;">PSP Description</label>
+                            <input type="text" id="trSearchPSPDesc" placeholder="e.g. *Rufbereitschaft*" style="width: 100%; padding: 7px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 12px; box-sizing: border-box;">
                         </div>
                     </div>
-                    
-                    <div>
-                        <label style="display: block; font-size: 12px; margin-bottom: 5px;">Project ID</label>
-                        <div style="display: flex; gap: 10px;">
-                            <input type="text" id="trSearchProjectId" placeholder="Project ID" style="flex: 1; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;">
-                            <button style="padding: 8px; border: 1px solid #dee2e6; background: white; border-radius: 4px; cursor: pointer;">🔍</button>
-                        </div>
-                    </div>
-                    
-                    <div>
-                        <label style="display: block; font-size: 12px; margin-bottom: 5px;">Project Description</label>
-                        <input type="text" id="trSearchProjectDesc" placeholder="Project Description" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;">
-                    </div>
-                    
-                    <div>
-                        <label style="display: block; font-size: 12px; margin-bottom: 5px;">PSP ID</label>
-                        <input type="text" id="trSearchPSPId" placeholder="PSP ID" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;">
-                    </div>
-                    
-                    <div>
-                        <label style="display: block; font-size: 12px; margin-bottom: 5px;">PSP Description</label>
-                        <input type="text" id="trSearchPSPDesc" placeholder="PSP Description" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;">
-                    </div>
-                    
-                    <div style="display: flex; gap: 10px; margin-top: 10px;">
-                        <button onclick="window.TimeRecordingEdit.performPSPSearch()" style="flex: 1; padding: 10px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer;">Go</button>
-                        <button onclick="window.TimeRecordingEdit.clearPSPSearch()" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear</button>
-                    </div>
+                </details>
+                
+                <!-- Child search -->
+                <div style="margin-bottom: 10px; padding: 10px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                        <input type="checkbox" id="trSearchChildMode" style="cursor: pointer;">
+                        <strong>👶 Child Search</strong> — Find all sub-elements of a parent PSP
+                    </label>
+                    <input type="text" id="trSearchParentPsp" placeholder="Parent PSP ID (e.g. 2911.IN.0076 → finds -01, -02, -03...)" style="width: 100%; padding: 7px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 12px; margin-top: 8px; box-sizing: border-box;" disabled>
+                </div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <button onclick="window.TimeRecordingEdit.performPSPSearch()" style="flex: 1; padding: 10px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">🔍 Search</button>
+                    <button onclick="window.TimeRecordingEdit.clearPSPSearch()" style="padding: 10px 20px; background: #6c757d; color: white; border: none; border-radius: 6px; cursor: pointer;">Clear</button>
                 </div>
             </div>
             
-            <div id="trPSPSearchResults" style="flex: 1; overflow-y: auto; padding: 0 20px 20px; max-height: 300px;">
+            <div id="trPSPSearchStatus" style="padding: 0 20px; font-size: 11px; color: #666;"></div>
+            <div id="trPSPSearchResults" style="flex: 1; overflow-y: auto; padding: 0 20px 20px; max-height: 350px;">
                 <!-- Results will be displayed here -->
             </div>
             
@@ -3497,64 +3710,112 @@ window.TimeRecordingEdit = {
         `;
         
         document.body.appendChild(searchDialog);
+        
+        // Toggle child search input
+        const childCheckbox = document.getElementById('trSearchChildMode');
+        const parentInput = document.getElementById('trSearchParentPsp');
+        childCheckbox.addEventListener('change', function() {
+            parentInput.disabled = !this.checked;
+            if (this.checked) parentInput.focus();
+        });
+        
+        // Enter key triggers search
+        const searchInputs = searchDialog.querySelectorAll('input[type="text"]');
+        searchInputs.forEach(input => {
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') window.TimeRecordingEdit.performPSPSearch();
+            });
+        });
+        
+        // Focus the global search input
+        document.getElementById('trSearchGlobal').focus();
     },
     
-    // Perform PSP search
-    performPSPSearch: async function() {
+    // Perform PSP search with wildcard, text, and child search support
+    performPSPSearch: function() {
+        const globalQuery = document.getElementById('trSearchGlobal').value;
         const partnerId = document.getElementById('trSearchPartner').value;
         const projectId = document.getElementById('trSearchProjectId').value;
         const projectDesc = document.getElementById('trSearchProjectDesc').value;
         const pspId = document.getElementById('trSearchPSPId').value;
         const pspDesc = document.getElementById('trSearchPSPDesc').value;
+        const childMode = document.getElementById('trSearchChildMode').checked;
+        const parentPsp = document.getElementById('trSearchParentPsp').value;
         
-        // Build search filters
-        let filters = [];
-        if (partnerId) filters.push(`PartnerNo eq '${partnerId}'`);
-        if (projectId) filters.push(`substringof('${projectId}', AccProjId)`);
-        if (projectDesc) filters.push(`substringof('${projectDesc}', AccProjDesc)`);
-        if (pspId) filters.push(`substringof('${pspId}', AccTaskPspId)`);
-        if (pspDesc) filters.push(`substringof('${pspDesc}', AccTaskPspDesc)`);
-        
-        if (filters.length === 0) {
+        // Validate input
+        const hasFilter = globalQuery || partnerId || projectId || projectDesc || pspId || pspDesc || (childMode && parentPsp);
+        if (!hasFilter) {
             alert('Please enter at least one search criteria');
             return;
         }
         
         const resultsDiv = document.getElementById('trPSPSearchResults');
-        resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px;">Searching...</div>';
+        const statusDiv = document.getElementById('trPSPSearchStatus');
+        resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px;">🔄 Searching...</div>';
+        statusDiv.innerHTML = '';
         
         try {
-            // Search using favorites as a base (you can extend this with actual search API)
-            const favorites = TimeRecordingAPI.getUserFavorites();
-            let results = favorites;
-            
-            // Apply filters locally for now (replace with actual API search)
-            if (projectId) {
-                results = results.filter(f => f.AccProjId.includes(projectId));
-            }
-            if (pspId) {
-                results = results.filter(f => f.AccTaskPspId.includes(pspId));
-            }
+            // Use the API's searchPSPElements function
+            const results = TimeRecordingAPI.searchPSPElements({
+                query: globalQuery,
+                pspId: pspId,
+                projectId: projectId,
+                partner: partnerId,
+                description: pspDesc || projectDesc,
+                parentPsp: parentPsp,
+                childSearch: childMode
+            });
             
             // Display results
             if (results.length === 0) {
-                resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;">No results found</div>';
+                resultsDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #666;">No results found. Try using wildcards: <code>*keyword*</code></div>';
+                statusDiv.innerHTML = '';
             } else {
-                let html = '<ul style="list-style: none; padding: 0; margin: 0;">';
-                results.forEach(result => {
+                statusDiv.innerHTML = `Found <strong>${results.length}</strong> PSP element${results.length !== 1 ? 's' : ''}` +
+                    (childMode && parentPsp ? ` (children of <code>${parentPsp}</code>)` : '');
+                
+                const escapeHtml = (str) => (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                let html = '<div style="margin-top: 8px;">';
+                results.forEach((result, index) => {
+                    const rPspId = escapeHtml(result.pspId);
+                    const rPspDesc = escapeHtml(result.pspDesc);
+                    const rProjId = escapeHtml(result.projectId);
+                    const rProjDesc = escapeHtml(result.projectDesc);
+                    const rPartner = escapeHtml(result.partner || result.name);
+                    
+                    // Determine nesting level from PSP ID dashes for visual hierarchy
+                    const dashes = (result.pspId || '').split('-').length - 1;
+                    const indent = childMode ? Math.min(dashes, 4) * 12 : 0;
+                    
                     html += `
-                        <li style="padding: 10px; border: 1px solid #dee2e6; border-radius: 4px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s;"
-                            onclick="window.TimeRecordingEdit.selectPSP('${result.AccProjId}', '${result.AccProjDesc}', '${result.AccTaskPspId}', '${result.AccTaskPspDesc}')"
-                            onmouseover="this.style.background='#f0f4ff'" 
-                            onmouseout="this.style.background='white'">
-                            <div style="font-weight: bold; margin-bottom: 5px;">${result.AccProjId} - ${result.AccTaskPspId}</div>
-                            <div style="font-size: 12px; color: #666;">${result.AccProjDesc}</div>
-                            <div style="font-size: 12px; color: #666;">${result.AccTaskPspDesc}</div>
-                        </li>
+                        <div data-psp-index="${index}" style="padding: 10px 10px 10px ${10 + indent}px; border: 1px solid #dee2e6; border-radius: 6px; margin-bottom: 6px; cursor: pointer; transition: all 0.15s; background: white;"
+                            onmouseover="this.style.background='#e8f0fe'; this.style.borderColor='#007bff'" 
+                            onmouseout="this.style.background='white'; this.style.borderColor='#dee2e6'">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                                <div>
+                                    <div style="font-weight: bold; font-size: 13px; color: #0056b3;">${rPspId}</div>
+                                    <div style="font-size: 12px; margin-top: 2px;">${rPspDesc}</div>
+                                </div>
+                                <div style="text-align: right; flex-shrink: 0; margin-left: 10px;">
+                                    <div style="font-size: 11px; color: #28a745; font-weight: bold;">${rProjId}</div>
+                                    <div style="font-size: 10px; color: #888;">${rProjDesc}</div>
+                                </div>
+                            </div>
+                            ${rPartner ? '<div style="font-size: 10px; color: #999; margin-top: 4px;">👤 ' + rPartner + '</div>' : ''}
+                        </div>
                     `;
                 });
-                html += '</ul>';
+                html += '</div>';
                 resultsDiv.innerHTML = html;
+                
+                // Attach click handlers
+                resultsDiv.querySelectorAll('div[data-psp-index]').forEach(el => {
+                    const idx = parseInt(el.dataset.pspIndex);
+                    const r = results[idx];
+                    el.addEventListener('click', () => {
+                        window.TimeRecordingEdit.selectPSP(r.projectId, r.projectDesc, r.pspId, r.pspDesc);
+                    });
+                });
             }
             
         } catch (error) {
@@ -3564,12 +3825,17 @@ window.TimeRecordingEdit = {
     
     // Clear PSP search
     clearPSPSearch: function() {
+        document.getElementById('trSearchGlobal').value = '';
         document.getElementById('trSearchPartner').value = '';
         document.getElementById('trSearchProjectId').value = '';
         document.getElementById('trSearchProjectDesc').value = '';
         document.getElementById('trSearchPSPId').value = '';
         document.getElementById('trSearchPSPDesc').value = '';
+        document.getElementById('trSearchChildMode').checked = false;
+        document.getElementById('trSearchParentPsp').value = '';
+        document.getElementById('trSearchParentPsp').disabled = true;
         document.getElementById('trPSPSearchResults').innerHTML = '';
+        document.getElementById('trPSPSearchStatus').innerHTML = '';
     },
     
     // Select PSP from search results

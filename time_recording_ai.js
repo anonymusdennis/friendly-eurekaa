@@ -332,6 +332,23 @@ if (appcontent) {
                             }
                         },
                         {
+                            name: "searchPSP",
+                            description: "Search for PSP (Project Structure Plan) elements across the user's favorites. Supports wildcard patterns (* for any characters, ? for single character), text search across all fields, and child search to find sub-elements of a parent PSP. Use this when the user asks to find a project, look up a PSP, or needs to identify the correct task/PSP element for time recording.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    query: { type: "string", description: "Global search text — searches across PSP ID, description, project ID, project description, and partner name. Supports wildcards (* and ?). Examples: 'Platform', '2911.IN.0072*', '*Rufbereitschaft*'" },
+                                    pspId: { type: "string", description: "Filter by PSP ID specifically. Supports wildcards. Examples: '2911.IN.0076-*', '2911.IN.00??-01'" },
+                                    projectId: { type: "string", description: "Filter by Project ID. Supports wildcards. Examples: 'WG2911', 'WG*'" },
+                                    partner: { type: "string", description: "Filter by partner/company name. Supports wildcards. Examples: 'Würth IT*', '*Adolf*'" },
+                                    description: { type: "string", description: "Filter by PSP or project description. Supports wildcards. Examples: '*Consulting*', '*Tower*'" },
+                                    parentPsp: { type: "string", description: "Parent PSP ID for child search. When childSearch is true, finds all sub-elements. Example: '2911.IN.0076' finds 2911.IN.0076-01, -02, etc." },
+                                    childSearch: { type: "boolean", description: "Set to true to find all children/sub-elements of the parentPsp. Default: false" }
+                                },
+                                required: []
+                            }
+                        },
+                        {
                             name: "createTimeEntry",
                             description: "Create new time entries for the user. Shows a review dialog where the user can approve, edit, or reject entries before they are saved. Use this when you have determined the correct project, task, hours, and description for one or more days.",
                             parameters: {
@@ -416,6 +433,8 @@ if (appcontent) {
                             return this.handleAddCalendarNote(args);
                         case 'removeCalendarNote':
                             return this.handleRemoveCalendarNote(args);
+                        case 'searchPSP':
+                            return this.handleSearchPSP(args);
                         case 'createTimeEntry':
                             return this.handleCreateTimeEntry(args);
                         default:
@@ -642,6 +661,45 @@ if (appcontent) {
                         };
                     } catch (error) {
                         return { error: 'Search failed: ' + error.message };
+                    }
+                },
+
+                // Handle searchPSP — search PSP elements with wildcard, text, and child search
+                handleSearchPSP: function (args) {
+                    try {
+                        const results = TimeRecordingAPI.searchPSPElements({
+                            query: args.query,
+                            pspId: args.pspId,
+                            projectId: args.projectId,
+                            partner: args.partner,
+                            description: args.description,
+                            parentPsp: args.parentPsp,
+                            childSearch: args.childSearch || false
+                        });
+
+                        if (results.length === 0) {
+                            return {
+                                totalResults: 0,
+                                message: 'No PSP elements found matching your criteria. Try broader wildcards (e.g. *keyword*) or check spelling.',
+                                results: []
+                            };
+                        }
+
+                        // Cap results to avoid overwhelming the AI context
+                        const maxResults = 50;
+                        const truncated = results.length > maxResults;
+                        const returnResults = results.slice(0, maxResults);
+
+                        return {
+                            totalResults: results.length,
+                            showing: returnResults.length,
+                            truncated: truncated,
+                            childSearch: args.childSearch || false,
+                            parentPsp: args.parentPsp || null,
+                            results: returnResults
+                        };
+                    } catch (error) {
+                        return { error: 'PSP search failed: ' + error.message };
                     }
                 },
 
@@ -1196,9 +1254,10 @@ You can:
 4. **Delete** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`deleteExistingRecord\`
 5. **Query** data \u2014 \`getMissingDays\`, \`getMonthSummary\`, \`getRecordsForDate\`, \`getFavorites\`, \`getProjectDetails\`
 6. **Search** \u2014 \`getRecordsForDateRange\` for multi-day lookups, \`searchRecords\` for keyword/project search
-7. **Clarify** \u2014 \`askUser\` when uncertain
-8. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
-9. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
+7. **Search PSP** \u2014 \`searchPSP\` to find PSP elements with wildcard patterns (*, ?), text search, or child search
+8. **Clarify** \u2014 \`askUser\` when uncertain
+9. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
+10. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
 
 # VISUAL FEEDBACK STRATEGY
 - When working on multiple days, call \`highlightDay\` on each day you're processing so the user can see your progress
@@ -1210,8 +1269,16 @@ You can:
 - Call \`makeNotes\` first to plan complex requests
 - Call \`getRecordsForDate\` or \`getRecordsForDateRange\` to see existing data before making changes
 - Call \`searchRecords\` to find records matching a keyword or project across the month
+- Call \`searchPSP\` to find PSP elements by name, ID, description, or to explore child elements (supports wildcards * and ?)
 - Call \`getFavorites\` if you need to look up available projects
 - Chain multiple function calls when needed \u2014 call one, get results, then call another
+
+## PSP SEARCH STRATEGY
+When the user asks to find a project/PSP, look up a task, or you need to identify the correct PSP element:
+- Use \`searchPSP\` with \`query\` for broad text search (e.g. query: "Platform")
+- Use wildcards for pattern matching (e.g. pspId: "2911.IN.0076-*" or query: "*Consulting*")
+- Use \`childSearch: true\` with \`parentPsp\` to find all sub-elements (e.g. parentPsp: "2911.IN.0076" finds -01, -02, -03...)
+- Combine filters for precise results (e.g. projectId: "WG2911" + description: "*Tower*")
 
 # EDITING WORKFLOW
 When the user asks to edit or change an existing record:
@@ -1292,6 +1359,15 @@ ${fence}
 
 **User:** "Find all my platform entries this month"
 **Response:** Calls \`searchRecords\` with keyword "platform", then summarizes the results.
+
+**User:** "What PSP elements are available for internal support?"
+**Response:** Calls \`searchPSP\` with query: "*Internal Support*", presents the matching PSP elements.
+
+**User:** "Show me all children of PSP 2911.IN.0076"
+**Response:** Calls \`searchPSP\` with childSearch: true, parentPsp: "2911.IN.0076", lists all sub-elements (-01 through -07).
+
+**User:** "Find all Rufbereitschaft tasks"
+**Response:** Calls \`searchPSP\` with query: "*Rufbereitschaft*", presents matching PSP elements with their IDs.
 
 # OUTPUT FORMAT
 When suggesting NEW entries, output EXACTLY ONE JSON block:
