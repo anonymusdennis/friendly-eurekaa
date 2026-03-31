@@ -266,6 +266,7 @@ createTimeRecord: async function(recordData) {
                 "EndTime": "PT00H00M",
                 "ObjectId": "",
                 "TicketDescription": "",
+                "JiraTicketId": recordData.jiraTicketId || "",
                 "StandByTypeValue": "",
                 "StandByCompValue": "",
                 "RemainingWork": "0.00"

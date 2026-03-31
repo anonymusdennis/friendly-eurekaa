@@ -227,7 +227,8 @@
                                     description: { type: "string", description: "New description/content (optional — only if changing)" },
                                     projectId: { type: "string", description: "New project ID (optional — only if changing)" },
                                     taskId: { type: "string", description: "New task/PSP ID (optional — only if changing)" },
-                                    accountInd: { type: "string", description: "New account indicator: '10' for billable, '90' for non-billable (optional)" }
+                                    accountInd: { type: "string", description: "New account indicator: '10' for billable, '90' for non-billable (optional)" },
+                                    jiraTicketId: { type: "string", description: "Jira ticket ID to set or update (optional — e.g. '#250001276')" }
                                 },
                                 required: ["date", "counter"]
                             }
@@ -358,7 +359,8 @@
                                                 taskId: { type: "string", description: "Task/PSP element ID (e.g. '2911.UM.0074-07-07-02')" },
                                                 hours: { type: "number", description: "Duration in hours (e.g. 7.5)" },
                                                 description: { type: "string", description: "Description of the work done" },
-                                                accountInd: { type: "string", description: "Account indicator: '10' for billable, '90' for non-billable. Default: '10'" }
+                                                accountInd: { type: "string", description: "Account indicator: '10' for billable, '90' for non-billable. Default: '10'" },
+                                                jiraTicketId: { type: "string", description: "Jira ticket ID if mentioned or referenced by the user (e.g. '#250001276'). Include when user mentions a ticket number." }
                                             },
                                             required: ["date", "projectId", "taskId", "hours", "description"]
                                         }
@@ -494,6 +496,7 @@
                         if (args.projectId !== undefined) updatedRecord.AccProjId = args.projectId;
                         if (args.taskId !== undefined) updatedRecord.AccTaskPspId = args.taskId;
                         if (args.accountInd !== undefined) updatedRecord.AccountInd = args.accountInd;
+                        if (args.jiraTicketId !== undefined) updatedRecord.JiraTicketId = args.jiraTicketId;
 
                         // Build a summary of changes for the user
                         const changes = [];
@@ -502,6 +505,7 @@
                         if (args.projectId !== undefined) changes.push('project: ' + record.AccProjId + ' \u2192 ' + args.projectId);
                         if (args.taskId !== undefined) changes.push('task: ' + record.AccTaskPspId + ' \u2192 ' + args.taskId);
                         if (args.accountInd !== undefined) changes.push('billable: ' + record.AccountInd + ' \u2192 ' + args.accountInd);
+                        if (args.jiraTicketId !== undefined) changes.push('jiraTicketId: ' + (record.JiraTicketId || '(none)') + ' \u2192 ' + args.jiraTicketId);
 
                         this.addMessage('model', '\u270F\uFE0F **Updating record** (Counter: ' + args.counter + ', Date: ' + args.date + '):\n' + changes.map(c => '\u2022 ' + c).join('\n'));
 
@@ -1364,9 +1368,16 @@ ${fence}
 # OUTPUT FORMAT
 When suggesting NEW entries, output EXACTLY ONE JSON block:
 ${fence}json
-{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}
+{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description","jiraTicketId":"#250001276"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}
 ${fence}
 For edits and deletes, use \`updateExistingRecord\` and \`deleteExistingRecord\` directly \u2014 do NOT output JSON.
+
+# JIRA TICKET ID
+- If the user mentions a Jira ticket number (e.g. "#250001276", "ticket 250001276", "JIRA-123"), ALWAYS include it as \`jiraTicketId\` in the entry
+- Proactively look for ticket IDs in the user's message \u2014 patterns like #NNNNNN, ticket numbers, or references to issues
+- When a ticket ID is found, attach it to ALL relevant entries for that work
+- The field is optional \u2014 only include it when a ticket is mentioned or clearly referenced
+- When updating existing records, use \`updateExistingRecord\` with the \`jiraTicketId\` field to set or change the ticket
 
 # RULES
 - If user asks a question, answer it \u2014 do not generate entries unless asked
@@ -1735,8 +1746,9 @@ Today: ${context.currentDate}`;
                         const dateFormatted = entry.date.substr(6, 2) + '.' + entry.date.substr(4, 2) + '.' + entry.date.substr(0, 4);
                         const acctInd = entry.accountInd || entry.AccountInd || '10';
                         const billableIcon = acctInd === '90' ? '\u{1F537}' : '\u{1F7E2}';
+                        const ticketLine = entry.jiraTicketId ? '<div style="color:#0052CC;font-size:13px;margin-bottom:3px;">\u{1F3AB} Jira: ' + entry.jiraTicketId + '</div>' : '';
 
-                        entryDiv.innerHTML = '<div style="display:flex;align-items:center;gap:15px;"><input type="checkbox" checked data-index="' + index + '" style="width:20px;height:20px;cursor:pointer;"><div style="flex:1;"><div style="font-weight:bold;margin-bottom:5px;">\u{1F4C5} ' + dateFormatted + ' \u2014 ' + entry.hours + 'h ' + billableIcon + '</div><div style="color:#666;font-size:14px;margin-bottom:3px;">\u{1F4C1} ' + entry.projectId + ' / ' + entry.taskId + '</div><div style="color:#333;">\u{1F4DD} ' + entry.description + '</div></div></div>';
+                        entryDiv.innerHTML = '<div style="display:flex;align-items:center;gap:15px;"><input type="checkbox" checked data-index="' + index + '" style="width:20px;height:20px;cursor:pointer;"><div style="flex:1;"><div style="font-weight:bold;margin-bottom:5px;">\u{1F4C5} ' + dateFormatted + ' \u2014 ' + entry.hours + 'h ' + billableIcon + '</div><div style="color:#666;font-size:14px;margin-bottom:3px;">\u{1F4C1} ' + entry.projectId + ' / ' + entry.taskId + '</div>' + ticketLine + '<div style="color:#333;">\u{1F4DD} ' + entry.description + '</div></div></div>';
 
                         entryList.appendChild(entryDiv);
 
@@ -2324,6 +2336,7 @@ createTimeRecord: async function(recordData) {
                 "EndTime": "PT00H00M",
                 "ObjectId": "",
                 "TicketDescription": "",
+                "JiraTicketId": recordData.jiraTicketId || "",
                 "StandByTypeValue": "",
                 "StandByCompValue": "",
                 "RemainingWork": "0.00"
@@ -6211,6 +6224,7 @@ window.TimeRecordingUI = {
                     projectDesc: favorite ?. AccProjDesc || '',
                     taskDesc: favorite ?. AccTaskPspDesc || '',
                     accountInd: entry?.accountInd || entry?.AccountInd || '10', // Default to billable
+                    jiraTicketId: entry.jiraTicketId || '',
                 };
             });
 
