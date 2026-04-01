@@ -43,6 +43,26 @@ if (appcontent) {
                 },
 
                 // Build month data structure (UPDATED to include all days)
+                // Get localStorage key for custom required hours
+                getRequiredHoursKey: function (year, month) {
+                    return 'required_hours_' + year + '_' + month;
+                },
+
+                // Get custom required hours for a month (or null if not set)
+                getCustomRequiredHours: function (year, month) {
+                    return TimeRecordingUtils.storage.load(this.getRequiredHoursKey(year, month), null);
+                },
+
+                // Save custom required hours for a month
+                saveCustomRequiredHours: function (year, month, hours) {
+                    TimeRecordingUtils.storage.save(this.getRequiredHoursKey(year, month), hours);
+                },
+
+                // Clear custom required hours for a month (revert to auto-calculated)
+                clearCustomRequiredHours: function (year, month) {
+                    TimeRecordingUtils.storage.remove(this.getRequiredHoursKey(year, month));
+                },
+
                 buildMonthData: function (year, month, records) {
                     const data = {
                         year: year,
@@ -51,6 +71,8 @@ if (appcontent) {
                         days: [],
                         totalHours: 0,
                         requiredHours: 0,
+                        weekendHours: 0,
+                        overtimeHours: 0,
                         completionRate: 0
                     };
 
@@ -76,9 +98,12 @@ if (appcontent) {
                         const dayData = this.buildDayData(current, records);
                         data.days.push(dayData);
 
-                        // Count totals for current month only (excluding weekends)
-                        if (current.getMonth() === month && ! dayData.isWeekend) {
-                            if (dayData.isWorkDay && ! dayData.isHoliday && ! dayData.isFuture) {
+                        // Count totals for current month only
+                        if (current.getMonth() === month) {
+                            if (dayData.isWeekend) {
+                                // Track weekend hours as overtime
+                                data.weekendHours += dayData.totalHours;
+                            } else if (dayData.isWorkDay && ! dayData.isHoliday && ! dayData.isFuture) {
                                 data.requiredHours += TimeRecordingConfig.calendar.dailyQuota;
                                 data.totalHours += dayData.totalHours;
                             }
@@ -87,7 +112,17 @@ if (appcontent) {
                         current.setDate(current.getDate() + 1);
                     }
 
-                    // Calculate completion rate
+                    // Apply custom required hours if set
+                    const customHours = this.getCustomRequiredHours(year, month);
+                    if (customHours !== null) {
+                        data.requiredHours = customHours;
+                    }
+
+                    // Calculate overtime: weekend hours + any weekday hours beyond required
+                    const weekdayOvertime = Math.max(0, data.totalHours - data.requiredHours);
+                    data.overtimeHours = data.weekendHours + weekdayOvertime;
+
+                    // Calculate completion rate (weekday hours vs required)
                     if (data.requiredHours > 0) {
                         data.completionRate = Math.round((data.totalHours / data.requiredHours) * 100);
                     }

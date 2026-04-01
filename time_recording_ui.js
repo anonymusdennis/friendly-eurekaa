@@ -181,8 +181,9 @@ window.TimeRecordingUI = {
                                 <button id="trToday" style="padding: 6px 12px; border: 1px solid #007bff; background: #007bff; color: white; border-radius: 4px; cursor: pointer; margin-left: 10px;">Today</button>
                             </div>
                             <div id="trStats" style="display: flex; gap: 20px; font-size: 13px;">
-                                <div>Required: <strong id="trRequiredHours">0</strong>h</div>
+                                <div id="trRequiredHoursBtn" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: background 0.2s;" title="Click to edit required hours">Required: <strong id="trRequiredHours">0</strong>h</div>
                                 <div>Recorded: <strong id="trRecordedHours">0</strong>h</div>
+                                <div id="trOvertimeDisplay" style="display: none;">Overtime: <strong id="trOvertimeHours" style="color: #007bff;">0</strong>h</div>
                                 <div>Completion: <strong id="trCompletionRate">0</strong>%</div>
                             </div>
                         </div>
@@ -445,9 +446,14 @@ window.TimeRecordingUI = {
         
 
 
-        if (dayData.isWeekend) 
+        if (dayData.isWeekend) {
             div.classList.add('tr-day-weekend');
-        
+            // If there are records on a weekend, make it more visible
+            if (dayData.totalHours > 0) {
+                div.style.opacity = '1';
+                div.style.background = '#e3f2fd';
+            }
+        }
 
 
         // Make selectable
@@ -477,6 +483,39 @@ window.TimeRecordingUI = {
             content += `<div style="font-size: 11px; color: #6c757d; text-align: center; margin: 5px 0;">🎉 ${
                 dayData.holidayInfo.name
             }</div>`;
+        } else if (dayData.isWeekend && dayData.totalHours > 0) {
+            // Show weekend hours as overtime
+            content += `<div class="tr-calendar-day-hours" style="color: #007bff;" title="Weekend overtime">⏰ ${
+                dayData.totalHours
+            }h</div>`;
+
+            // Add entry blobs for weekend records
+            content += `<div class="tr-calendar-day-entries" id="entries-${
+                dayData.dateKey
+            }">`;
+            if (dayData.records && dayData.records.length > 0) {
+                dayData.records.forEach((record, index) => {
+                    const hours = parseFloat(record.Duration);
+                    const title = `${
+                        record.Duration
+                    }h: ${
+                        record.Content || 'No description'
+                    }`;
+                    content += `<div class="tr-entry-blob" 
+                                     data-index="${index}" 
+                                     data-date="${
+                        dayData.dateKey
+                    }"
+                                     data-hours="${
+                        Math.round(hours)
+                    }"
+                                     title="${
+                        title.replace(/"/g, '&quot;')
+                    }"
+                                     style="background: #007bff;"></div>`;
+                });
+            }
+            content += `</div>`;
         } else if (dayData.isWorkDay && ! dayData.isFuture && ! dayData.isWeekend) {
             content += `<div class="tr-calendar-day-hours">${
                 dayData.totalHours
@@ -885,6 +924,11 @@ window.TimeRecordingUI = {
             TimeRecordingCalendar.refresh();
         };
 
+        // Required hours editor popup
+        document.getElementById('trRequiredHoursBtn').onclick = (e) => {
+            this.showRequiredHoursPopup(e);
+        };
+
         // Quick entry handlers
         document.getElementById('trApplySelected').onclick = () => {
             this.applyTimeToSelectedDays();
@@ -1194,6 +1238,28 @@ window.TimeRecordingUI = {
         document.getElementById('trRecordedHours').textContent = monthData.totalHours.toFixed(2);
         document.getElementById('trCompletionRate').textContent = monthData.completionRate;
 
+        // Show overtime if any weekend hours or excess weekday hours
+        const overtimeDisplay = document.getElementById('trOvertimeDisplay');
+        const overtimeHours = document.getElementById('trOvertimeHours');
+        if (overtimeDisplay && overtimeHours) {
+            if (monthData.overtimeHours > 0) {
+                overtimeDisplay.style.display = '';
+                overtimeHours.textContent = monthData.overtimeHours.toFixed(2);
+            } else {
+                overtimeDisplay.style.display = 'none';
+            }
+        }
+
+        // Indicate if custom required hours are set
+        const requiredBtn = document.getElementById('trRequiredHoursBtn');
+        if (requiredBtn) {
+            const customHours = TimeRecordingCalendar.getCustomRequiredHours(monthData.year, monthData.month);
+            requiredBtn.title = customHours !== null
+                ? 'Custom required hours set — click to edit'
+                : 'Click to edit required hours';
+            requiredBtn.style.background = customHours !== null ? '#e3f2fd' : '';
+        }
+
         const rateElement = document.getElementById('trCompletionRate');
         if (monthData.completionRate >= 100) {
             rateElement.style.color = TimeRecordingConfig.ui.colors.complete;
@@ -1209,6 +1275,104 @@ window.TimeRecordingUI = {
         if (window.TimeRecordingAI) {
             setTimeout(() => TimeRecordingAI.reapplyCalendarOverlays(), 50);
         }
+    },
+
+    // Show popup to edit required hours for the current month
+    showRequiredHoursPopup: function (event) {
+        // Remove existing popup if any
+        const existing = document.getElementById('trRequiredHoursPopup');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+
+        const monthData = TimeRecordingCalendar.monthData;
+        const year = monthData.year;
+        const month = monthData.month;
+        const currentRequired = monthData.requiredHours;
+        const customHours = TimeRecordingCalendar.getCustomRequiredHours(year, month);
+        const dailyQuota = TimeRecordingConfig.calendar.dailyQuota;
+
+        const popup = document.createElement('div');
+        popup.id = 'trRequiredHoursPopup';
+        popup.style.cssText = 'position: fixed; z-index: 100001; background: white; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); padding: 16px; min-width: 260px;';
+
+        // Position near the button
+        const btnRect = event.currentTarget.getBoundingClientRect();
+        popup.style.top = (btnRect.bottom + 8) + 'px';
+        popup.style.left = btnRect.left + 'px';
+
+        popup.innerHTML = `
+            <div style="font-weight: 600; margin-bottom: 12px; font-size: 14px;">
+                Edit Required Hours
+                <span style="font-size: 11px; color: #6c757d; display: block;">
+                    ${monthData.monthName}${customHours !== null ? ' (custom)' : ''}
+                </span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                <button id="trReqMinus8" style="padding: 6px 12px; border: 1px solid #dee2e6; background: #f8f9fa; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px;">-${dailyQuota}h</button>
+                <input id="trReqHoursInput" type="number" value="${currentRequired}" min="0" max="744" step="1"
+                    style="width: 70px; padding: 6px 8px; border: 1px solid #dee2e6; border-radius: 4px; text-align: center; font-size: 16px; font-weight: 600;" />
+                <span style="font-size: 14px;">h</span>
+                <button id="trReqPlus8" style="padding: 6px 12px; border: 1px solid #dee2e6; background: #f8f9fa; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px;">+${dailyQuota}h</button>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button id="trReqSave" style="flex: 1; padding: 6px 12px; border: none; background: #007bff; color: white; border-radius: 4px; cursor: pointer; font-size: 13px;">Save</button>
+                <button id="trReqReset" style="flex: 1; padding: 6px 12px; border: 1px solid #dee2e6; background: white; border-radius: 4px; cursor: pointer; font-size: 13px;"${customHours === null ? ' disabled title="Already using auto-calculated hours"' : ''}>Reset to Auto</button>
+            </div>
+            <div style="font-size: 11px; color: #6c757d; margin-top: 8px;">
+                Adjust for holidays, part-time, etc.
+            </div>
+        `;
+
+        document.body.appendChild(popup);
+
+        // Ensure popup stays within viewport
+        const popupRect = popup.getBoundingClientRect();
+        if (popupRect.right > window.innerWidth) {
+            popup.style.left = (window.innerWidth - popupRect.width - 8) + 'px';
+        }
+        if (popupRect.bottom > window.innerHeight) {
+            popup.style.top = (btnRect.top - popupRect.height - 8) + 'px';
+        }
+
+        const input = document.getElementById('trReqHoursInput');
+
+        document.getElementById('trReqMinus8').onclick = () => {
+            const val = parseFloat(input.value) || 0;
+            input.value = Math.max(0, val - dailyQuota);
+        };
+
+        document.getElementById('trReqPlus8').onclick = () => {
+            const val = parseFloat(input.value) || 0;
+            input.value = val + dailyQuota;
+        };
+
+        document.getElementById('trReqSave').onclick = () => {
+            const val = parseFloat(input.value);
+            if (isNaN(val) || val < 0) {
+                input.style.borderColor = '#dc3545';
+                return;
+            }
+            TimeRecordingCalendar.saveCustomRequiredHours(year, month, val);
+            popup.remove();
+            TimeRecordingCalendar.loadCurrentMonth();
+        };
+
+        document.getElementById('trReqReset').onclick = () => {
+            TimeRecordingCalendar.clearCustomRequiredHours(year, month);
+            popup.remove();
+            TimeRecordingCalendar.loadCurrentMonth();
+        };
+
+        // Close popup when clicking outside
+        const closeHandler = (e) => {
+            if (!popup.contains(e.target) && e.target !== event.currentTarget && !event.currentTarget.contains(e.target)) {
+                popup.remove();
+                document.removeEventListener('mousedown', closeHandler);
+            }
+        };
+        setTimeout(() => document.addEventListener('mousedown', closeHandler), 0);
     },
 
     // Rest of the existing methods...
