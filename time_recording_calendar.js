@@ -45,7 +45,7 @@ if (appcontent) {
                 // Build month data structure (UPDATED to include all days)
                 // Get localStorage key for custom required hours
                 getRequiredHoursKey: function (year, month) {
-                    return 'required_hours_' + year + '_' + month;
+                    return 'required_hours_' + year + '_' + String(month).padStart(2, '0');
                 },
 
                 // Get custom required hours for a month (or null if not set)

@@ -2873,7 +2873,7 @@ window.TimeRecordingCalendar = {
 
     // Get localStorage key for custom required hours
     getRequiredHoursKey: function (year, month) {
-        return 'required_hours_' + year + '_' + month;
+        return 'required_hours_' + year + '_' + String(month).padStart(2, '0');
     },
 
     // Get custom required hours for a month (or null if not set)
@@ -6312,7 +6312,7 @@ window.TimeRecordingUI = {
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
                 <button id="trReqMinus8" style="padding: 6px 12px; border: 1px solid #dee2e6; background: #f8f9fa; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px;">-${dailyQuota}h</button>
                 <input id="trReqHoursInput" type="number" value="${currentRequired}" min="0" max="744" step="1"
-                    style="width: 70px; padding: 6px 8px; border: 1px solid #dee2e6; border-radius: 4px; text-align: center; font-size: 16px; font-weight: 600;" />
+                    style="width: 70px; padding: 6px 8px; border: 1px solid #dee2e6; border-radius: 4px; text-align: center; font-size: 16px; font-weight: 600;" /><!-- max 744 = 31 days × 24h -->
                 <span style="font-size: 14px;">h</span>
                 <button id="trReqPlus8" style="padding: 6px 12px; border: 1px solid #dee2e6; background: #f8f9fa; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px;">+${dailyQuota}h</button>
             </div>
@@ -6367,7 +6367,7 @@ window.TimeRecordingUI = {
 
         // Close popup when clicking outside
         const closeHandler = (e) => {
-            if (!popup.contains(e.target) && e.target !== event.currentTarget && !event.currentTarget.contains(e.target)) {
+            if (!popup.contains(e.target) && !event.currentTarget.contains(e.target)) {
                 popup.remove();
                 document.removeEventListener('mousedown', closeHandler);
             }
