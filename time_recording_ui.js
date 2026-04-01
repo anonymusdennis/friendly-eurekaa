@@ -614,6 +614,7 @@ window.TimeRecordingUI = {
         }
 
         return div;
+<<<<<<< HEAD
     },
 
     // Excel-like selection methods
@@ -1555,6 +1556,8 @@ window.TimeRecordingUI = {
             statusElement.textContent = message;
             statusElement.style.color = level === 'error' ? '#dc3545' : '#6c757d';
         }
+=======
+>>>>>>> 38cb98bacfe8812eb935dcfc04fb13e72fb45226
     }
 
 
