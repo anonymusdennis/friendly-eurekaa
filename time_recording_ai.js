@@ -1990,7 +1990,8 @@ Today: ${context.currentDate}`;
                                     if (!displayContent.includes('<pre')) {
                                         displayContent = displayContent.replace(/\n/g, '<br>');
                                     }
-                                    const label = msg.sender === 'user' ? '\u{1F464} You' : '\u{1F916} ' + (msg.modelName || 'AI');
+                                    const safeModelName = (msg.modelName || 'AI').replace(/[<>&"']/g, '');
+                                    const label = msg.sender === 'user' ? '\u{1F464} You' : '\u{1F916} ' + safeModelName;
                                     messageDiv.innerHTML = '<div style="font-size:11px;color:#666;margin-bottom:5px;font-weight:bold;">' + label + '</div><div style="font-size:13px;line-height:1.5;">' + displayContent + '</div>';
                                     container.appendChild(messageDiv);
                                 });
