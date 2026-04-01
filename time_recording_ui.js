@@ -1268,6 +1268,7 @@ window.TimeRecordingUI = {
                     projectDesc: favorite ?. AccProjDesc || '',
                     taskDesc: favorite ?. AccTaskPspDesc || '',
                     accountInd: entry?.accountInd || entry?.AccountInd || '10', // Default to billable
+                    jiraTicketId: entry.jiraTicketId || '',
                 };
             });
 

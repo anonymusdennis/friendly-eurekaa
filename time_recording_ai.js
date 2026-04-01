@@ -234,7 +234,8 @@ if (appcontent) {
                                     description: { type: "string", description: "New description/content (optional — only if changing)" },
                                     projectId: { type: "string", description: "New project ID (optional — only if changing)" },
                                     taskId: { type: "string", description: "New task/PSP ID (optional — only if changing)" },
-                                    accountInd: { type: "string", description: "New account indicator: '10' for billable, '90' for non-billable (optional)" }
+                                    accountInd: { type: "string", description: "New account indicator: '10' for billable, '90' for non-billable (optional)" },
+                                    jiraTicketId: { type: "string", description: "Jira ticket ID to set or update (optional — e.g. '#250001276')" }
                                 },
                                 required: ["date", "counter"]
                             }
@@ -332,6 +333,23 @@ if (appcontent) {
                             }
                         },
                         {
+                            name: "searchPSP",
+                            description: "Search for PSP (Project Structure Plan) elements across the user's favorites. Supports wildcard patterns (* for any characters, ? for single character), text search across all fields, and child search to find sub-elements of a parent PSP. Use this when the user asks to find a project, look up a PSP, or needs to identify the correct task/PSP element for time recording.",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    query: { type: "string", description: "Global search text — searches across PSP ID, description, project ID, project description, and partner name. Supports wildcards (* and ?). Examples: 'Platform', '2911.IN.0072*', '*Rufbereitschaft*'" },
+                                    pspId: { type: "string", description: "Filter by PSP ID specifically. Supports wildcards. Examples: '2911.IN.0076-*', '2911.IN.00??-01'" },
+                                    projectId: { type: "string", description: "Filter by Project ID. Supports wildcards. Examples: 'WG2911', 'WG*'" },
+                                    partner: { type: "string", description: "Filter by partner/company name. Supports wildcards. Examples: 'Würth IT*', '*Adolf*'" },
+                                    description: { type: "string", description: "Filter by PSP or project description. Supports wildcards. Examples: '*Consulting*', '*Tower*'" },
+                                    parentPsp: { type: "string", description: "Parent PSP ID for child search. When childSearch is true, finds all sub-elements. Example: '2911.IN.0076' finds 2911.IN.0076-01, -02, etc." },
+                                    childSearch: { type: "boolean", description: "Set to true to find all children/sub-elements of the parentPsp. Default: false" }
+                                },
+                                required: []
+                            }
+                        },
+                        {
                             name: "createTimeEntry",
                             description: "Create new time entries for the user. Shows a review dialog where the user can approve, edit, or reject entries before they are saved. Use this when you have determined the correct project, task, hours, and description for one or more days.",
                             parameters: {
@@ -348,7 +366,8 @@ if (appcontent) {
                                                 taskId: { type: "string", description: "Task/PSP element ID (e.g. '2911.UM.0074-07-07-02')" },
                                                 hours: { type: "number", description: "Duration in hours (e.g. 7.5)" },
                                                 description: { type: "string", description: "Description of the work done" },
-                                                accountInd: { type: "string", description: "Account indicator: '10' for billable, '90' for non-billable. Default: '10'" }
+                                                accountInd: { type: "string", description: "Account indicator: '10' for billable, '90' for non-billable. Default: '10'" },
+                                                jiraTicketId: { type: "string", description: "Jira ticket ID if mentioned or referenced by the user (e.g. '#250001276'). Include when user mentions a ticket number." }
                                             },
                                             required: ["date", "projectId", "taskId", "hours", "description"]
                                         }
@@ -416,6 +435,8 @@ if (appcontent) {
                             return this.handleAddCalendarNote(args);
                         case 'removeCalendarNote':
                             return this.handleRemoveCalendarNote(args);
+                        case 'searchPSP':
+                            return this.handleSearchPSP(args);
                         case 'createTimeEntry':
                             return this.handleCreateTimeEntry(args);
                         default:
@@ -482,6 +503,7 @@ if (appcontent) {
                         if (args.projectId !== undefined) updatedRecord.AccProjId = args.projectId;
                         if (args.taskId !== undefined) updatedRecord.AccTaskPspId = args.taskId;
                         if (args.accountInd !== undefined) updatedRecord.AccountInd = args.accountInd;
+                        if (args.jiraTicketId !== undefined) updatedRecord.JiraTicketId = args.jiraTicketId;
 
                         // Build a summary of changes for the user
                         const changes = [];
@@ -490,6 +512,7 @@ if (appcontent) {
                         if (args.projectId !== undefined) changes.push('project: ' + record.AccProjId + ' \u2192 ' + args.projectId);
                         if (args.taskId !== undefined) changes.push('task: ' + record.AccTaskPspId + ' \u2192 ' + args.taskId);
                         if (args.accountInd !== undefined) changes.push('billable: ' + record.AccountInd + ' \u2192 ' + args.accountInd);
+                        if (args.jiraTicketId !== undefined) changes.push('jiraTicketId: ' + (record.JiraTicketId || '(none)') + ' \u2192 ' + args.jiraTicketId);
 
                         this.addMessage('model', '\u270F\uFE0F **Updating record** (Counter: ' + args.counter + ', Date: ' + args.date + '):\n' + changes.map(c => '\u2022 ' + c).join('\n'));
 
@@ -642,6 +665,45 @@ if (appcontent) {
                         };
                     } catch (error) {
                         return { error: 'Search failed: ' + error.message };
+                    }
+                },
+
+                // Handle searchPSP — search PSP elements with wildcard, text, and child search
+                handleSearchPSP: function (args) {
+                    try {
+                        const results = TimeRecordingAPI.searchPSPElements({
+                            query: args.query,
+                            pspId: args.pspId,
+                            projectId: args.projectId,
+                            partner: args.partner,
+                            description: args.description,
+                            parentPsp: args.parentPsp,
+                            childSearch: args.childSearch || false
+                        });
+
+                        if (results.length === 0) {
+                            return {
+                                totalResults: 0,
+                                message: 'No PSP elements found matching your criteria. Try broader wildcards (e.g. *keyword*) or check spelling.',
+                                results: []
+                            };
+                        }
+
+                        // Cap results to avoid overwhelming the AI context
+                        const maxResults = 50;
+                        const truncated = results.length > maxResults;
+                        const returnResults = results.slice(0, maxResults);
+
+                        return {
+                            totalResults: results.length,
+                            showing: returnResults.length,
+                            truncated: truncated,
+                            childSearch: args.childSearch || false,
+                            parentPsp: args.parentPsp || null,
+                            results: returnResults
+                        };
+                    } catch (error) {
+                        return { error: 'PSP search failed: ' + error.message };
                     }
                 },
 
@@ -1075,6 +1137,9 @@ if (appcontent) {
                                 // If the result was handled by createTimeEntry (review dialog shown), don't process further
                                 if (result === '__CREATED_ENTRIES__') return;
 
+                                // If the result was handled by deleteExistingRecord (confirmation prompt shown), don't process further
+                                if (result === '__PENDING_DELETION__') return;
+
                                 this.processAIResponse(result);
                                 return;
 
@@ -1196,9 +1261,10 @@ You can:
 4. **Delete** existing records \u2014 call \`getRecordsForDate\` to find the Counter, then \`deleteExistingRecord\`
 5. **Query** data \u2014 \`getMissingDays\`, \`getMonthSummary\`, \`getRecordsForDate\`, \`getFavorites\`, \`getProjectDetails\`
 6. **Search** \u2014 \`getRecordsForDateRange\` for multi-day lookups, \`searchRecords\` for keyword/project search
-7. **Clarify** \u2014 \`askUser\` when uncertain
-8. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
-9. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
+7. **Search PSP** \u2014 \`searchPSP\` to find PSP elements with wildcard patterns (*, ?), text search, or child search
+8. **Clarify** \u2014 \`askUser\` when uncertain
+9. **Visual** \u2014 \`highlightDay\` to visually mark a day you're working on, \`clearHighlights\` to remove markers
+10. **Annotate** \u2014 \`addCalendarNote\` to add persistent emoji+text notes on calendar days, \`removeCalendarNote\` to remove them
 
 # VISUAL FEEDBACK STRATEGY
 - When working on multiple days, call \`highlightDay\` on each day you're processing so the user can see your progress
@@ -1210,8 +1276,16 @@ You can:
 - Call \`makeNotes\` first to plan complex requests
 - Call \`getRecordsForDate\` or \`getRecordsForDateRange\` to see existing data before making changes
 - Call \`searchRecords\` to find records matching a keyword or project across the month
+- Call \`searchPSP\` to find PSP elements by name, ID, description, or to explore child elements (supports wildcards * and ?)
 - Call \`getFavorites\` if you need to look up available projects
 - Chain multiple function calls when needed \u2014 call one, get results, then call another
+
+## PSP SEARCH STRATEGY
+When the user asks to find a project/PSP, look up a task, or you need to identify the correct PSP element:
+- Use \`searchPSP\` with \`query\` for broad text search (e.g. query: "Platform")
+- Use wildcards for pattern matching (e.g. pspId: "2911.IN.0076-*" or query: "*Consulting*")
+- Use \`childSearch: true\` with \`parentPsp\` to find all sub-elements (e.g. parentPsp: "2911.IN.0076" finds -01, -02, -03...)
+- Combine filters for precise results (e.g. projectId: "WG2911" + description: "*Tower*")
 
 # EDITING WORKFLOW
 When the user asks to edit or change an existing record:
@@ -1293,12 +1367,28 @@ ${fence}
 **User:** "Find all my platform entries this month"
 **Response:** Calls \`searchRecords\` with keyword "platform", then summarizes the results.
 
+**User:** "What PSP elements are available for internal support?"
+**Response:** Calls \`searchPSP\` with query: "*Internal Support*", presents the matching PSP elements.
+
+**User:** "Show me all children of PSP 2911.IN.0076"
+**Response:** Calls \`searchPSP\` with childSearch: true, parentPsp: "2911.IN.0076", lists all sub-elements (-01 through -07).
+
+**User:** "Find all Rufbereitschaft tasks"
+**Response:** Calls \`searchPSP\` with query: "*Rufbereitschaft*", presents matching PSP elements with their IDs.
+
 # OUTPUT FORMAT
 When suggesting NEW entries, output EXACTLY ONE JSON block:
 ${fence}json
-{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}
+{"entries":[{"AccountInd":"10","date":"YYYYMMDD","projectId":"exact_id","taskId":"exact_task_id","hours":7.5,"description":"Specific unique description","jiraTicketId":"#250001276"},{"AccountInd":"90","date":"YYYYMMDD","projectId":"2911.AD.0006","taskId":"2911.AD.0006-01","hours":0.5,"description":"Admin task description"}]}
 ${fence}
 For edits and deletes, use \`updateExistingRecord\` and \`deleteExistingRecord\` directly \u2014 do NOT output JSON.
+
+# JIRA TICKET ID
+- If the user mentions a Jira ticket number (e.g. "#250001276", "ticket 250001276", "JIRA-123"), ALWAYS include it as \`jiraTicketId\` in the entry
+- Proactively look for ticket IDs in the user's message \u2014 patterns like #NNNNNN, ticket numbers, or references to issues
+- When a ticket ID is found, attach it to ALL relevant entries for that work
+- The field is optional \u2014 only include it when a ticket is mentioned or clearly referenced
+- When updating existing records, use \`updateExistingRecord\` with the \`jiraTicketId\` field to set or change the ticket
 
 # RULES
 - If user asks a question, answer it \u2014 do not generate entries unless asked
@@ -1444,6 +1534,12 @@ Today: ${context.currentDate}`;
                     if (name === 'createTimeEntry') {
                         this.hideTypingIndicator();
                         return '__CREATED_ENTRIES__';
+                    }
+
+                    // If deleteExistingRecord, the confirmation prompt was shown — stop the chain and wait for user
+                    if (name === 'deleteExistingRecord') {
+                        this.hideTypingIndicator();
+                        return '__PENDING_DELETION__';
                     }
 
                     // Send function result back to Gemini
@@ -1667,8 +1763,9 @@ Today: ${context.currentDate}`;
                         const dateFormatted = entry.date.substr(6, 2) + '.' + entry.date.substr(4, 2) + '.' + entry.date.substr(0, 4);
                         const acctInd = entry.accountInd || entry.AccountInd || '10';
                         const billableIcon = acctInd === '90' ? '\u{1F537}' : '\u{1F7E2}';
+                        const ticketLine = entry.jiraTicketId ? '<div style="color:#0052CC;font-size:13px;margin-bottom:3px;">\u{1F3AB} Jira: ' + entry.jiraTicketId + '</div>' : '';
 
-                        entryDiv.innerHTML = '<div style="display:flex;align-items:center;gap:15px;"><input type="checkbox" checked data-index="' + index + '" style="width:20px;height:20px;cursor:pointer;"><div style="flex:1;"><div style="font-weight:bold;margin-bottom:5px;">\u{1F4C5} ' + dateFormatted + ' \u2014 ' + entry.hours + 'h ' + billableIcon + '</div><div style="color:#666;font-size:14px;margin-bottom:3px;">\u{1F4C1} ' + entry.projectId + ' / ' + entry.taskId + '</div><div style="color:#333;">\u{1F4DD} ' + entry.description + '</div></div></div>';
+                        entryDiv.innerHTML = '<div style="display:flex;align-items:center;gap:15px;"><input type="checkbox" checked data-index="' + index + '" style="width:20px;height:20px;cursor:pointer;"><div style="flex:1;"><div style="font-weight:bold;margin-bottom:5px;">\u{1F4C5} ' + dateFormatted + ' \u2014 ' + entry.hours + 'h ' + billableIcon + '</div><div style="color:#666;font-size:14px;margin-bottom:3px;">\u{1F4C1} ' + entry.projectId + ' / ' + entry.taskId + '</div>' + ticketLine + '<div style="color:#333;">\u{1F4DD} ' + entry.description + '</div></div></div>';
 
                         entryList.appendChild(entryDiv);
 

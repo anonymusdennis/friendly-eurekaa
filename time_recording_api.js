@@ -266,6 +266,7 @@ createTimeRecord: async function(recordData) {
                 "EndTime": "PT00H00M",
                 "ObjectId": "",
                 "TicketDescription": "",
+                "JiraTicketId": recordData.jiraTicketId || "",
                 "StandByTypeValue": "",
                 "StandByCompValue": "",
                 "RemainingWork": "0.00"
@@ -417,6 +418,133 @@ createTimeRecord: async function(recordData) {
             TimeRecordingUtils.log('error', `Failed to fetch project details for ${projectId}`, error);
             return null;
         }
+    },
+
+    // Search PSP elements across user favorites with advanced filtering
+    // Supports: wildcard (*, ?), text search, and child search
+    searchPSPElements: function(options) {
+        const favorites = this.getUserFavorites();
+        if (!favorites || favorites.length === 0) {
+            return [];
+        }
+
+        const query = (options.query || '').trim();
+        const pspId = (options.pspId || '').trim();
+        const projectId = (options.projectId || '').trim();
+        const partner = (options.partner || '').trim();
+        const description = (options.description || '').trim();
+        const parentPsp = (options.parentPsp || '').trim();
+        const childSearch = !!options.childSearch;
+
+        // Convert wildcard pattern to RegExp (supports * and ?)
+        function wildcardToRegex(pattern) {
+            if (!pattern) return null;
+            const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+            const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+            try {
+                return new RegExp('^' + regexStr + '$', 'i');
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Check if a string matches a filter (supports wildcard or substring)
+        function matchesFilter(value, filter) {
+            if (!filter) return true;
+            if (!value) return false;
+            // If filter contains wildcard characters, use regex matching
+            if (filter.includes('*') || filter.includes('?')) {
+                const regex = wildcardToRegex(filter);
+                return regex ? regex.test(value) : false;
+            }
+            // Otherwise, case-insensitive substring match
+            return value.toLowerCase().includes(filter.toLowerCase());
+        }
+
+        let results = favorites;
+
+        // Child search: find all PSP elements that are children of the given parent
+        if (childSearch && parentPsp) {
+            const parentLower = parentPsp.toLowerCase();
+            results = results.filter(f => {
+                const taskId = (f.AccTaskPspId || '').toLowerCase();
+                // A child starts with the parent ID followed by a dash and more segments
+                return taskId.startsWith(parentLower + '-') ||
+                       taskId === parentLower;
+            });
+            // If no other filters, return child results directly
+            if (!query && !pspId && !projectId && !partner && !description) {
+                return results.map(f => ({
+                    pspId: f.AccTaskPspId,
+                    pspDesc: f.AccTaskPspDesc || f.Name || '',
+                    projectId: f.AccProjId,
+                    projectDesc: f.AccProjDesc || '',
+                    partner: f.PartnerNo || f.Partner || '',
+                    name: f.Name || ''
+                }));
+            }
+        }
+
+        // Global text search (searches across all fields)
+        if (query) {
+            const isWildcard = query.includes('*') || query.includes('?');
+            if (isWildcard) {
+                const regex = wildcardToRegex(query);
+                if (regex) {
+                    results = results.filter(f =>
+                        regex.test(f.AccTaskPspId || '') ||
+                        regex.test(f.AccTaskPspDesc || '') ||
+                        regex.test(f.AccProjId || '') ||
+                        regex.test(f.AccProjDesc || '') ||
+                        regex.test(f.Name || '') ||
+                        regex.test(f.PartnerNo || '') ||
+                        regex.test(f.Partner || '')
+                    );
+                }
+            } else {
+                const lowerQuery = query.toLowerCase();
+                results = results.filter(f =>
+                    (f.AccTaskPspId || '').toLowerCase().includes(lowerQuery) ||
+                    (f.AccTaskPspDesc || '').toLowerCase().includes(lowerQuery) ||
+                    (f.AccProjId || '').toLowerCase().includes(lowerQuery) ||
+                    (f.AccProjDesc || '').toLowerCase().includes(lowerQuery) ||
+                    (f.Name || '').toLowerCase().includes(lowerQuery) ||
+                    (f.PartnerNo || '').toLowerCase().includes(lowerQuery) ||
+                    (f.Partner || '').toLowerCase().includes(lowerQuery)
+                );
+            }
+        }
+
+        // Field-specific filters with wildcard support
+        if (pspId) {
+            results = results.filter(f => matchesFilter(f.AccTaskPspId, pspId));
+        }
+        if (projectId) {
+            results = results.filter(f => matchesFilter(f.AccProjId, projectId));
+        }
+        if (partner) {
+            results = results.filter(f =>
+                matchesFilter(f.PartnerNo, partner) ||
+                matchesFilter(f.Partner, partner) ||
+                matchesFilter(f.Name, partner)
+            );
+        }
+        if (description) {
+            results = results.filter(f =>
+                matchesFilter(f.AccTaskPspDesc, description) ||
+                matchesFilter(f.AccProjDesc, description)
+            );
+        }
+
+        // Map to clean output format
+        return results.map(f => ({
+            pspId: f.AccTaskPspId,
+            pspDesc: f.AccTaskPspDesc || f.Name || '',
+            projectId: f.AccProjId,
+            projectDesc: f.AccProjDesc || '',
+            partner: f.PartnerNo || f.Partner || '',
+            name: f.Name || ''
+        }));
     },
     
     // Fetch records for entire month (keep existing implementation)
