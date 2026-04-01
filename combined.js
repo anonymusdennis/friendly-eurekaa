@@ -1129,6 +1129,9 @@
                                 // If the result was handled by createTimeEntry (review dialog shown), don't process further
                                 if (result === '__CREATED_ENTRIES__') return;
 
+                                // If the result was handled by deleteExistingRecord (confirmation prompt shown), don't process further
+                                if (result === '__PENDING_DELETION__') return;
+
                                 this.processAIResponse(result);
                                 return;
 
@@ -1523,6 +1526,12 @@ Today: ${context.currentDate}`;
                     if (name === 'createTimeEntry') {
                         this.hideTypingIndicator();
                         return '__CREATED_ENTRIES__';
+                    }
+
+                    // If deleteExistingRecord, the confirmation prompt was shown — stop the chain and wait for user
+                    if (name === 'deleteExistingRecord') {
+                        this.hideTypingIndicator();
+                        return '__PENDING_DELETION__';
                     }
 
                     // Send function result back to Gemini
